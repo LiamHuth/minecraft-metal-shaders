@@ -465,7 +465,7 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 		float yc = f.cameraBlock.y + f.cameraFract.y;
 		float3 sigR = sl.fogR.rgb;
 		float hR = sl.fogR.w, y0R = sl.fogMisc.x;
-		float sigM = sl.fogM.x, hM = sl.fogM.y, y0M = sl.fogM.z, alM = sl.fogM.w;
+		float sigM = sl.fogM.x, hM = sl.fogM.y, y0M = sl.fogM.z;
 		float local = p.light.w;
 		bool skyPx = d <= 0.0;
 		constexpr sampler gridLin(filter::linear, address::repeat);
@@ -549,16 +549,18 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 			forestAll += dF * seg;
 			trans *= stepT;
 		}
-		float3 hA = hazeAll * sigR, hL = hazeLit * sigR;
-		// E06's phase functions, multiple-scattering boosts and evening glow (shade_m2.metal shadeHazeInscatter): its sunlit part
-		// times (lit - all) = what the shadows take out of it
-		float phR = 0.0596831 * (1.0 + mu * mu);
-		float phM = 0.8 * shadeHG(mu, SHADE_HAZE_MIE_G) + 0.2 * shadeHG(mu, -0.2);
+		// The final pass adds an analytic haze integral with no forest extinction.
+		// Subtracting this march's absolute integral left sunlight behind even in
+		// full shadow: dense forest air attenuated the correction, and sparse height
+		// samples/grey extinction disagreed with the final pass's RGB integral.
+		// Use the march only for each layer's shadowed fraction, applied to the exact
+		// same sunlight integral as the final pass. All-shadow cancels all sunlight;
+		// all-sun cancels none. Ambient fog and the separately added forest air stay.
+		float2 blocked = saturate(1.0 - float2(hazeLit, mistLit) / max(float2(hazeAll, mistAll), 1e-8));
+		float3 hazeT, shadowed;
+		shadeHazeInscatterFrom(dir * D, yc, f, sl, blocked, hazeT, shadowed);
+		shadowed = -shadowed;
 		float glow = 1.0 + sl.fogMisc.w;
-		// (FT2.10) the sunlight the final pass's haze has around the camera (shadeAirSun: none in a cave), so only what it added is
-		// taken out (else the shadows darkened a cave's walls down to the floor of what they may take, mcopt.shade.vl.airFloor)
-		float3 E = f.sunColor.rgb * (3.14159265 * shadeAirSun(sl));
-		float3 shadowed = E * ((hL - hA) * (phR * 2.0) + (mistLit - mistAll) * (phM * glow * alM / (1.0 - 0.5 * alM)));
 		// (FT2.12) and the aerial blend's glow around the sun (shade_m2.metal shadeAerialSunGlow; the terrain mixed it in unshadowed)
 		// by the share of the ray in shade: its density (fogSky.z, ~1/1250 per block) is even along the ray. A sun set behind a
 		// mountain no longer glows through it (Gael 2026-10-11)

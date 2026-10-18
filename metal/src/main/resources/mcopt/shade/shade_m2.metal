@@ -245,7 +245,9 @@ static inline float3 shadeHazeTransmittance(float3 p, constant ShadeFrame &f, co
 // scattering boost, and the evening glow around sunset. sunVis scales the sun term (the VL module owns the shadowed part).
 // (FT2.7) shadeHazeInscatterFrom: the same over a segment p that starts yc (absolute height) instead of at the camera.
 // (FT2.12) Ssun: the sun's (or moon's) part of what it returns, the glow the VL air mode's shadows may take back out (shade_post.metal)
-static float3 shadeHazeInscatterFrom(float3 p, float yc, constant ShadeFrame &f, constant ShadeLook &L, float sunVis, thread float3 &T,
+// Separate visibility for the height haze and low mist: the VL march weights the
+// shadows in each layer, then uses this same integral as the final fog pass.
+static float3 shadeHazeInscatterFrom(float3 p, float yc, constant ShadeFrame &f, constant ShadeLook &L, float2 sunVis, thread float3 &T,
                                      thread float3 &Ssun) {
 	float t = length(p);
 	float3 v = p / max(t, 1e-4);
@@ -263,18 +265,22 @@ static float3 shadeHazeInscatterFrom(float3 p, float yc, constant ShadeFrame &f,
 	// (FT1.3: 0.5 by default, mcopt.shade.hazeMieG: toward a low sun 0.76 washed far terrain out to cream white, Gael)
 	float phM = 0.8 * shadeHG(nu, SHADE_HAZE_MIE_G) + 0.2 * shadeHG(nu, -0.2);
 	float airSun = shadeAirSun(L);
-	float3 E = f.sunColor.rgb * (3.14159265 * sunVis * airSun); // irradiance from the light (sunColor is light / pi); FT2.10: none in caves
+	float3 E = f.sunColor.rgb * (3.14159265 * airSun); // irradiance from the light (sunColor is light / pi); FT2.10: none in caves
 	float3 sky = f.ambientSky.rgb * (0.9 * shadeAirSky(L)); // mean sky radiance (ambientSky ~ irradiance / pi); FT2.9: none in caves
 	float glow = 1.0 + L.fogMisc.w; // (ShadeLook: strength x exp(-((sun elevation in degrees + 1) / 2.5)^2), once per frame)
 	float aM = L.fogM.w;
-	float3 sR = (E * phR + sky) * (1.0 / (1.0 - 0.5));
-	float3 sM = (E * phM * glow + sky) * aM / (1.0 - 0.5 * aM);
+	float3 sR = (E * (phR * sunVis.x) + sky) * (1.0 / (1.0 - 0.5));
+	float3 sM = (E * (phM * glow * sunVis.y) + sky) * aM / (1.0 - 0.5 * aM);
 	float3 w = (1.0 - T) / max(tau, 1e-6);
-	Ssun = w * E * (tauR * (phR * 2.0) + tauM * (phM * glow * aM / (1.0 - 0.5 * aM)));
+	Ssun = w * E * (tauR * (phR * 2.0 * sunVis.x) + tauM * (phM * glow * aM * sunVis.y / (1.0 - 0.5 * aM)));
 	// (FT2.10) what the cave air scatters instead: neutral grey at a share of the minimum cave light (L.eye.x, BSL's "minimum light
 	// x 0.5" fog colour, Photon's faint dark cave fog), so far walls fade into the cave's darkness, never into a tint
 	float cave = (1.0 - airSun) * L.eye.x * f.ambientBlock.w;
 	return w * (tauR * sR + tauM * sM) + (1.0 - T) * cave;
+}
+static float3 shadeHazeInscatterFrom(float3 p, float yc, constant ShadeFrame &f, constant ShadeLook &L, float sunVis, thread float3 &T,
+                                     thread float3 &Ssun) {
+	return shadeHazeInscatterFrom(p, yc, f, L, float2(sunVis), T, Ssun);
 }
 static float3 shadeHazeInscatterFrom(float3 p, float yc, constant ShadeFrame &f, constant ShadeLook &L, float sunVis, thread float3 &T) {
 	float3 Ssun;
