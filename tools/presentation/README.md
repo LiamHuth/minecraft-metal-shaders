@@ -50,3 +50,39 @@ Validation of `promotion.3` on the M4 Pro passed the SDR/HDR native suite (24 de
 Still needs real-world testing: sustained gameplay on the external Studio Display XDR, fullscreen transitions, moving the game between displays, sleep/wake, and heavily GPU-bound worlds. Lower input latency is a goal to measure, not a result claimed by this prototype.
 
 API references: [CAMetalDisplayLink](https://developer.apple.com/documentation/quartzcore/cametaldisplaylink), [targetTimestamp](https://developer.apple.com/documentation/quartzcore/cametaldisplaylink/update/targettimestamp), [preferredFrameLatency](https://developer.apple.com/documentation/quartzcore/cametaldisplaylink/preferredframelatency).
+
+## Diagnostic recorder (`promotion.4-diagnostic`)
+
+The second reported whole-desktop freeze still occurred with `promotion.3`. Its log ended at an enable request in exclusive fullscreen on the built-in 120 Hz display. No new WindowServer stack survived. This build adds evidence collection; it does **not** claim to fix that freeze or change the display-link handoff.
+
+The recorder is on by default in this diagnostic build. Every launch creates a separate `logs/mcopt-presentation-<time>-<pid>.log` inside the Minecraft game directory; old files are never overwritten. The file records the build, requested/actual pacing state, SDL fullscreen flags, output dimensions, display rate, HDR layer format, creation/invalidation, layer changes, shutdown and shortcut requests. It does not record account credentials, chat, or world contents. Files are created with owner-only permissions.
+
+Transition records use macOS `F_FULLFSYNC` to request persistence before continuing. If that fails, the recorder falls back to `fsync` and records a warning. Ordinary frame markers stay in a bounded memory ring, also dumped when a link closes (including callback-timeout fallback). An independent thread dumps and flushes the last 128 markers after a second without progress, including command-buffer waits, acquisition, commit and present. That monitor makes no Metal or AppKit calls, and does not kill the game. Loading, pausing in a debugger, and shutdown may legitimately trigger a `STALL` record; it is evidence of missing CPU progress, not proof of a GPU hang. A system-wide lockup can still prevent the monitor or storage from making progress.
+
+`-Dmcopt.metal.displayLink.trace=false` disables the recorder. Storage flushes change transition timing, so do not use this diagnostic build's toggle latency as a performance measurement. [Apple's fsync documentation](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fsync.2.html) explains the additional storage flush.
+
+Recorder regression, without touching the display:
+
+```sh
+clang -fno-objc-arc -O2 -Wall -Werror -mmacosx-version-min=15.0 \
+  -I metal/src/main/native -framework Foundation -framework QuartzCore \
+  metal/src/main/native/mcpresentationtrace.m tools/presentation/tracecheck.m -o /tmp/mcopt-tracecheck
+python3 tools/presentation/tracecheck.py /tmp/mcopt-tracecheck
+```
+
+The check covers a stalled main thread, ring wraparound, `SIGKILL`, preserving existing files, permissions, open failures and disabled recording. It checks abrupt process termination, not a physical power failure.
+
+Fullscreen regression uses a disposable offline Fabric world and the locally cached Prism dependencies. It never edits an existing Prism instance. Set `JAVA_HOME` to JDK 25, or pass `--java-home`. The baseline leaves ProMotion off; add `--toggle` for a single enable/disable cycle after HDR fullscreen is confirmed:
+
+```sh
+python3 tools/presentation/fullscreen-smoke.py /absolute/path/to/mod.jar --output /tmp/mcopt-fullscreen-baseline
+python3 tools/presentation/fullscreen-smoke.py /absolute/path/to/mod.jar --output /tmp/mcopt-fullscreen-toggle --toggle
+```
+
+The helper sets VSync/120 FPS, requests exclusive fullscreen and 2160p output, verifies the actual SDL fullscreen flag, checks HDR, then returns to windowed mode. During the live comparison, a render-thread timeout halts **only the temporary game process**. This cannot guarantee recovery from a WindowServer or GPU hang; there is no automatic retry. `game-path` and `fullscreen.log` in the chosen output directory locate the session and its diagnostics, including failed runs.
+
+Fullscreen Metal validation also exposed a separate pre-existing issue before ProMotion was enabled: switching to a terrain configuration without unit occlusion left compute arguments 13–15 unbound. They now receive inert fallback bindings, following the existing disabled-argument pattern. The shader's unit-occlusion flag still controls access; rendering algorithms and enabled culling modes are unchanged.
+
+Validation on the M4 Pro / macOS 27.0.1: the no-GPU recorder tests passed. The HDR fullscreen baseline passed at 3342×2160 with ProMotion off after the disabled-buffer correction. The single live-enable attempt failed to sustain callbacks: status changed `ACTIVE → WAITING → SWITCHING → FALLBACK` within roughly 0.23 seconds; `inFlight=0` at teardown and invalidation/transaction flush both returned. The test exited with its failure code before the planned explicit toggle-off. The desktop remained responsive. This is a captured fullscreen presentation failure, **not** a reproduction or explanation of the earlier WindowServer freeze; no fullscreen retry was performed.
+
+The final recorder also passed the windowed native SDR/HDR suite with Metal validation and logging enabled: 1,560 callbacks per format, 120/60/90 FPS caps, pixel checks, resize/hide/restore, and 24 delayed-GPU transitions. No storage-sync warnings were recorded.

@@ -3,6 +3,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import "mcmetal.h"
 #import "mcdisplaylink.h"
+#import "mcpresentationtrace.h"
 #include <assert.h>
 #include <unistd.h>
 Ctx *mc_create(char *, int, char *, int);
@@ -71,6 +72,8 @@ static void transitionCheck(Ctx *ctx, Enc *enc, CAMetalLayer *layer, id<MTLTextu
     puts("PASS: 12 delayed-GPU and uncommitted transitions, legacy restart, unused drawable");
 }
 int main(int argc, const char **argv) { @autoreleasepool {
+    const char *trace = getenv("MCOPT_PRESENTATION_TRACE");
+    if (trace) require(mc_presentation_trace_open(trace) == 0,"trace opened");
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
     [NSApp finishLaunching];

@@ -55,6 +55,7 @@ public final class DisplayKeybinds {
 
 	private static void toggleHdr(Minecraft mc) {
 		boolean scene = !ShadeXdr.fullScene();
+		DisplayLink.trace("hdr.request scene=" + scene);
 		set(HDR_MODE, scene ? "scene" : "highlights");
 		String message = !Shade.ENABLED || !ShadeXdr.active() ? "message.mcopt.hdr_unavailable"
 			: scene ? "message.mcopt.hdr_scene" : "message.mcopt.hdr_highlights";
@@ -63,6 +64,7 @@ public final class DisplayKeybinds {
 
 	private static void togglePromotion(Minecraft mc) {
 		boolean enabled = !DisplayLink.enabled();
+		DisplayLink.trace("promotion.request enabled=" + enabled + " actual=" + DisplayLink.status());
 		set(DisplayLink.KEY, Boolean.toString(enabled));
 		// Only request the mode here. The current drawable/limiter stays valid until next frame.
 		promotionMessageUntil = System.nanoTime() + 5_000_000_000L;

@@ -7,6 +7,7 @@
 #import <QuartzCore/CATransaction.h>
 #import <AppKit/AppKit.h>
 #include <math.h>
+#import "mcpresentationtrace.h"
 
 static NSString *const MCDisplayMode = @"mcopt.display-link";
 
@@ -48,6 +49,7 @@ static NSString *const MCDisplayMode = @"mcopt.display-link";
 @end
 @implementation MCDisplayLink
 - (void)metalDisplayLink:(CAMetalDisplayLink *)sender needsUpdate:(CAMetalDisplayLinkUpdate *)update {
+    mc_presentation_mark("link.callback", self, waiting);
     if (!waiting || frame || !update.drawable) return;
     // Some displays round a 90 Hz request up to 120. Preserve the user's average cap
     // by selecting updates on a deadline grid, without a second sleep after rendering.
@@ -89,6 +91,18 @@ static int maximumRate(CAMetalLayer *layer) {
 
 void *mc_display_link_create(CAMetalLayer *layer, int latency, int log) {
     if (@available(macOS 14.0, *)) { @autoreleasepool {
+        mc_presentation_trace_note("link.create.begin");
+        if (mc_presentation_trace_enabled()) {
+            NSWindow *window = nil;
+            if ([NSThread isMainThread]) for (CALayer *l = layer; l; l = l.superlayer) {
+                if ([l.delegate isKindOfClass:[NSView class]]) { window = ((NSView *)l.delegate).window; break; }
+            }
+            mc_presentation_checkpoint([NSString stringWithFormat:@"link.context layer=%p size=%.0fx%.0f format=%lu sync=%d drawables=%lu edr=%d main=%d screen=%@ maxHz=%ld fullscreenStyle=%d windowFrame=%@ screenFrame=%@",
+                layer, layer.drawableSize.width, layer.drawableSize.height, (unsigned long)layer.pixelFormat,
+                layer.displaySyncEnabled, (unsigned long)layer.maximumDrawableCount, layer.wantsExtendedDynamicRangeContent,
+                [NSThread isMainThread], window.screen.deviceDescription[@"NSScreenNumber"], (long)window.screen.maximumFramesPerSecond,
+                (window.styleMask & NSWindowStyleMaskFullScreen) != 0, NSStringFromRect(window.frame), NSStringFromRect(window.screen.frame)]);
+        }
         MCDisplayLink *p = [MCDisplayLink new];
         p->layer = [layer retain];
         p->runLoop = [[NSRunLoop currentRunLoop] retain];
@@ -99,12 +113,18 @@ void *mc_display_link_create(CAMetalLayer *layer, int latency, int log) {
         p->inFlight = [NSMutableArray new];
         p->stats->lastReport = CACurrentMediaTime();
         p->logging = log;
+        mc_presentation_trace_note("link.init.begin");
         p->link = [[CAMetalDisplayLink alloc] initWithMetalLayer:layer];
+        mc_presentation_trace_note("link.init.end");
         if (!p->link) { [p release]; return NULL; }
         p->link.delegate = p;
         p->link.preferredFrameLatency = latency == 2 ? 2 : 1;
+        mc_presentation_mark("link.pause.begin", p, 0);
         p->link.paused = YES;
+        mc_presentation_mark("link.pause.end", p, 0);
+        mc_presentation_trace_note("link.add-runloop.begin");
         [p->link addToRunLoop:p->runLoop forMode:MCDisplayMode];
+        mc_presentation_trace_note("link.create.end");
         NSLog(@"[mcopt] CAMetalDisplayLink enabled (latency %d); VSync off uses legacy pacing", latency == 2 ? 2 : 1);
         return p;
     } }
@@ -116,7 +136,9 @@ void mc_display_link_pause(void *handle) {
     if (!p) return;
     p->waiting = NO;
     p->nextPresentation = 0;
+    mc_presentation_mark("link.pause.begin", p, 0);
     p->link.paused = YES;
+    mc_presentation_mark("link.pause.end", p, 0);
     [p->frame release];
     p->frame = nil;
     @synchronized(p->stats) { p->stats->lastPresented = 0; }
@@ -135,6 +157,9 @@ static void retireFrames(MCDisplayLink *p) {
 int mc_display_link_close(void *handle) {
     MCDisplayLink *p = handle;
     if (!p) return 1;
+    if (!p->retiring) mc_presentation_snapshot("link.close: recent CPU stages");
+    if (!p->retiring && mc_presentation_trace_enabled()) mc_presentation_checkpoint([NSString stringWithFormat:@"link.close.begin handle=%p inFlight=%lu acquired=%d", p, (unsigned long)p->inFlight.count, p->frame != nil]);
+    mc_presentation_mark("link.close.poll", p, p->inFlight.count);
     p->waiting = NO;
     // This drawable was acquired but never encoded. Frames handed to an encoder are
     // held separately, including the interval before that encoder commits them.
@@ -143,19 +168,26 @@ int mc_display_link_close(void *handle) {
     retireFrames(p);
     if (p->inFlight.count) {
         if (!p->retiring && p->logging) NSLog(@"[mcopt] display link: switching, waiting for %lu GPU frame(s)", (unsigned long)p->inFlight.count);
+        if (!p->retiring) mc_presentation_trace_note("link.close.deferred: encoded/submitted frames remain");
         p->retiring = YES;
         return 0; // caller keeps ownership, skips presentation and retries next frame
     }
+    mc_presentation_trace_note("link.close.gpu-retired");
     mc_display_link_pause(p);
     p->link.delegate = nil;
     // invalidate already removes all run-loop registrations. Do it exactly once and
     // only after every encoded drawable has been submitted, presented and completed.
+    mc_presentation_trace_note("link.invalidate.begin");
     [p->link invalidate];
+    mc_presentation_trace_note("link.invalidate.end");
     [p->link release];
     p->link = nil; // invalidate exactly once; repeated invalidation crashes on macOS 27
+    mc_presentation_trace_note("link.transaction-flush.begin");
     [CATransaction flush];
+    mc_presentation_trace_note("link.transaction-flush.end");
     if (p->logging) NSLog(@"[mcopt] display link: stopped after GPU frames completed");
     [p release];
+    mc_presentation_trace_note("link.close.end");
     return 1;
 }
 
@@ -195,13 +227,16 @@ int mc_display_link_begin(void *handle, int cap) {
             p->nextPresentation = 0;
             if (p->logging) NSLog(@"[mcopt] display link: requested %d Hz (cap %d, screen maximum %d)", rate, cap, maximum);
         }
+        mc_presentation_mark("link.resume.begin", p, rate);
         p->link.paused = NO;
+        mc_presentation_mark("link.wait.begin", p, rate);
         p->waiting = YES;
         double stop = CACurrentMediaTime() + 0.050;
         while (!p->frame && CACurrentMediaTime() < stop) {
             CFRunLoopRunInMode((CFStringRef)MCDisplayMode, fmax(0, stop - CACurrentMediaTime()), true);
         }
         p->waiting = NO;
+        mc_presentation_mark("link.wait.end", p, p->frame != nil);
         if (!p->frame) { @synchronized(p->stats) { p->stats->timeouts++; } }
         report(p);
         return p->frame != nil;
@@ -222,6 +257,7 @@ id mc_display_link_take(void *handle) {
 
 void mc_display_link_prepare(id object, id<MTLCommandBuffer> cb) {
     MCDisplayFrame *f = object;
+    mc_presentation_mark("link.prepare", cb, 0);
     f->commandBuffer = [cb retain];
     MCDisplayStats *s = f->stats; // retained by the copied blocks until GPU/display completes
     double began = f->began;
@@ -250,6 +286,8 @@ void mc_display_link_present(id object) {
     // Apple's display-link deadline is the CPU present deadline, not GPU completion.
     // Commit all rendering first, then call the drawable directly; no scheduled-handler delay.
     if (CACurrentMediaTime() > f->deadline) { @synchronized(f->stats) { f->stats->deadlines++; } }
+    mc_presentation_mark("link.present.begin", f->commandBuffer, 0);
     [f->drawable present];
+    mc_presentation_mark("link.present.end", f->commandBuffer, 0);
     f->presented = YES;
 }

@@ -1,3 +1,4 @@
+#import "mcpresentationtrace.h"
 // Thin C surface over Metal for the Java backend (called through java.lang.foreign).
 // Objects cross the boundary as retained pointers; Java owns them and hands them back to mc_release.
 // Built without ARC so ownership is explicit. Hot encoder calls allocate nothing, so they need no autorelease pool.
@@ -957,6 +958,7 @@ static void pqSubmit(void);
 // Commits everything recorded so far (the pre command buffer first). Returns the retained main command buffer so Java can
 // wait on it (frame pacing, fences); it completes after the pre one.
 id<MTLCommandBuffer> mc_enc_commit(Enc *enc) {
+	mc_presentation_mark("encoder.commit.begin", enc, 0);
 	double t = 0;
 	long n = 0;
 	uint64_t big = 0, preBytes = 0, mainBytes = 0;
@@ -980,7 +982,9 @@ id<MTLCommandBuffer> mc_enc_commit(Enc *enc) {
 	id<MTLCommandBuffer> c = cmd(enc);
 	if (diagOn) [c addCompletedHandler:^(id<MTLCommandBuffer> cb) { diagReport("main", n, t, big, mainBytes, cb); }];
 	if (enc->displayLinkFrame) mc_display_link_prepare(enc->displayLinkFrame, c);
+	mc_presentation_mark("command.commit.begin", c, enc->displayLinkFrame != nil);
 	[c commit];
+	mc_presentation_mark("command.commit.end", c, enc->displayLinkFrame != nil);
 	if (enc->displayLinkFrame) {
 		mc_display_link_present(enc->displayLinkFrame);
 		[enc->displayLinkFrame release];
@@ -1004,10 +1008,15 @@ id<MTLCommandBuffer> mc_enc_commit(Enc *enc) {
 		});
 	}
 	pqSubmit();  // -Dmcopt.metal.presentQueue: the present this frame encoded (nothing without the flag)
+	mc_presentation_mark("encoder.commit.end", c, 0);
 	return c;
 }
 
-void mc_cmd_wait(id<MTLCommandBuffer> c) { [c waitUntilCompleted]; }
+void mc_cmd_wait(id<MTLCommandBuffer> c) {
+	mc_presentation_mark("command.wait.begin", c, 0);
+	[c waitUntilCompleted];
+	mc_presentation_mark("command.wait.end", c, 0);
+}
 int mc_cmd_done(id<MTLCommandBuffer> c) { return c.status >= MTLCommandBufferStatusCompleted; }
 // Nothing recorded since the last commit: no command buffer open (-Dmcopt.cpu.fence).
 int mc_enc_empty(Enc *enc) { return enc->cmd == nil && enc->pre == nil; }
@@ -1746,6 +1755,7 @@ uint32_t mc_layer_display(CAMetalLayer *layer); // mcxdr.m: the display the laye
 static CAMetalLayer *paceLayer; // the surface's layer (mc_layer_configure): the pacer can follow its window's display
 
 void mc_layer_configure(Ctx *ctx, CAMetalLayer *layer, int width, int height, int vsync) {
+	if (mc_presentation_trace_enabled()) mc_presentation_checkpoint([NSString stringWithFormat:@"layer.configure.begin layer=%p width=%d height=%d vsyncFlags=%d", layer, width, height, vsync]);
 	layer.device = ctx->device;
 	if (mc_xdr_on() && mc_xdr_ready(ctx->device)) { // EDR: linear extended Display P3 in half floats, values above 1 brighter than SDR white
 		layer.pixelFormat = MTLPixelFormatRGBA16Float;
@@ -1763,6 +1773,7 @@ void mc_layer_configure(Ctx *ctx, CAMetalLayer *layer, int width, int height, in
 	layer.displaySyncEnabled = (vsync & 1) != 0;
 	int drawables = (vsync >> 8) & 0xff;
 	layer.maximumDrawableCount = drawables == 2 || drawables == 3 ? drawables : 3;
+	mc_presentation_trace_note("layer.configure.end");
 }
 
 // ---- present pacing ----

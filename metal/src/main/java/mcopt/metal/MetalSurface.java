@@ -63,6 +63,7 @@ final class MetalSurface implements GpuSurfaceBackend {
 	public void configure(GpuSurface.Configuration config) {
 		// Resize/VSync events can arrive after acquisition, or even after a drawable was
 		// encoded. Keep the old layer intact until those frames finish; coalesce resizes.
+		DisplayLink.trace("surface.configure-request width=" + config.width() + " height=" + config.height() + " mode=" + config.presentMode());
 		this.pendingConfiguration = config;
 		this.applyPendingConfiguration();
 	}
@@ -112,7 +113,11 @@ final class MetalSurface implements GpuSurfaceBackend {
 			}
 			return false;
 		}
-		if (!this.linkActive) Native.presentDrain();
+		if (!this.linkActive) {
+			DisplayLink.trace("legacy.drain.begin");
+			Native.presentDrain();
+			DisplayLink.trace("legacy.drain.end");
+		}
 		if (this.displayLink == 0) {
 			this.displayLink = Native.displayLinkCreate(this.layer, DisplayLink.LATENCY, DisplayLink.LOG ? 1 : 0);
 		}
@@ -177,7 +182,9 @@ final class MetalSurface implements GpuSurfaceBackend {
 		MetalEvents.Operation event = MetalEvents.begin("nextDrawable", -1, 0);
 		long drawable;
 		try {
+			DisplayLink.stage(2, this.layer, 0);
 			drawable = Native.layerNext(this.layer);
+			DisplayLink.stage(3, this.layer, drawable);
 		} finally {
 			MetalEvents.end(event);
 		}
@@ -201,9 +208,11 @@ final class MetalSurface implements GpuSurfaceBackend {
 	public void close() {
 		if (DisplayLink.surface == this) DisplayLink.surface = null;
 		// Final shutdown already drains the renderer. Live transitions above never wait.
+		DisplayLink.trace("surface.shutdown.begin");
 		this.encoder.waitIdle();
 		if (!this.closeDisplayLink()) throw new IllegalStateException("Display-link frame was not submitted before surface shutdown");
 		Native.presentDrain();
 		SDLMetal.SDL_Metal_DestroyView(this.view);
+		DisplayLink.trace("surface.shutdown.end");
 	}
 }

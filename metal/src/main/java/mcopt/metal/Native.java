@@ -25,6 +25,9 @@ final class Native {
 	private static final Linker LINKER = Linker.nativeLinker();
 	private static final SymbolLookup LIB = SymbolLookup.libraryLookup(extract(), Arena.global());
 
+	private static final MethodHandle PRESENTATION_TRACE_OPEN = fn("mc_presentation_trace_open", false, JAVA_INT, JAVA_LONG);
+	private static final MethodHandle PRESENTATION_TRACE_NOTE = fn("mc_presentation_trace_note", false, null, JAVA_LONG);
+	private static final MethodHandle PRESENTATION_TRACE_JAVA = fn("mc_presentation_trace_java", false, null, JAVA_INT, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle CREATE = fn("mc_create", false, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle MAX_BUFFER_LENGTH = fn("mc_max_buffer_length", true, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle RELEASE = fn("mc_release", false, null, JAVA_LONG);
@@ -241,6 +244,17 @@ final class Native {
 	static int presentQueued(long enc, long drawable, long texture) { if (FrameCapture.FULL && FrameCapture.active()) FrameCapture.present(texture); try { return (int) PRESENT_QUEUED.invokeExact(enc, drawable, texture); } catch (Throwable t) { throw rethrow(t); } }
 	static long presentSkipped() { try { return (long) PRESENT_SKIPPED.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
 	static int presentQueuedAcquire(long enc, long layer, long texture, long cadence) { if (FrameCapture.FULL && FrameCapture.active()) FrameCapture.present(texture); try { return (int) PRESENT_QUEUED_ACQUIRE.invokeExact(enc, layer, texture, cadence); } catch (Throwable t) { throw rethrow(t); } }
+	static int presentationTraceOpen(String path) {
+		try (var arena = Arena.ofConfined()) { return (int) PRESENTATION_TRACE_OPEN.invokeExact(arena.allocateFrom(path).address()); }
+		catch (Throwable t) { throw rethrow(t); }
+	}
+	static void presentationTraceNote(String message) {
+		try (var arena = Arena.ofConfined()) { PRESENTATION_TRACE_NOTE.invokeExact(arena.allocateFrom(message).address()); }
+		catch (Throwable t) { throw rethrow(t); }
+	}
+	static void presentationTraceStage(int stage, long object, long value) {
+		try { PRESENTATION_TRACE_JAVA.invokeExact(stage, object, value); } catch (Throwable t) { throw rethrow(t); }
+	}
 	static long displayLinkCreate(long layer, int latency, int log) { try { return (long) DISPLAY_LINK_CREATE.invokeExact(layer, latency, log); } catch (Throwable t) { throw rethrow(t); } }
 	static boolean displayLinkBegin(long link, int fps) { try { return (int) DISPLAY_LINK_BEGIN.invokeExact(link, fps) != 0; } catch (Throwable t) { throw rethrow(t); } }
 	static boolean displayLinkClose(long link) { try { return (int) DISPLAY_LINK_CLOSE.invokeExact(link) != 0; } catch (Throwable t) { throw rethrow(t); } }

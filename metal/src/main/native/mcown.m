@@ -1341,11 +1341,11 @@ void mco_frag_cull(Own *w, Enc *enc, const void *frame, int frameLength, const v
 		[c setBuffer:args offset:0 atIndex:3];
 		[c setBuffer:lists offset:0 atIndex:4];
 		[c setBuffer:mask offset:0 atIndex:5];
-		if (w->uoccVis) {
-			[c setBuffer:w->uoccVis offset:0 atIndex:13];
-			[c setBuffer:w->uoccT offset:0 atIndex:14];
-			[c setBuffer:w->uoccBArgs offset:0 atIndex:15];
-		}
+		// Resolution/TAA can disable unit occlusion after it was active. The kernels
+		// still declare these arguments; flag 64 guards all access when disabled.
+		[c setBuffer:w->uoccVis ? w->uoccVis : args offset:0 atIndex:13];
+		[c setBuffer:w->uoccT ? w->uoccT : args offset:0 atIndex:14];
+		[c setBuffer:w->uoccBArgs ? w->uoccBArgs : args offset:0 atIndex:15];
 		ownBindSolid(w, c);
 		ownA1Bind(w, c, args);
 		[c setBuffer:w->tieRing ? w->tieRing : sections offset:0 atIndex:30];  // (read only under FragFrame's F_TIE_CLOSE, which needs the ring)
