@@ -11,6 +11,6 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 abstract class DisplayLinkMixin {
 	@Inject(method = "run", at = @At(value = "INVOKE", target = "Lcom/mojang/blaze3d/systems/RenderSystem;pollEvents(Lcom/mojang/blaze3d/platform/SDLEventHandler;)V"))
 	private void mcopt$displayFrame(CallbackInfo ci) {
-		if (DisplayLink.ENABLED) DisplayLink.beforeInput(Minecraft.getInstance().getFramerateLimitTracker().getFramerateLimit());
+		DisplayLink.beforeInput(Minecraft.getInstance().getFramerateLimitTracker().getFramerateLimit());
 	}
 }

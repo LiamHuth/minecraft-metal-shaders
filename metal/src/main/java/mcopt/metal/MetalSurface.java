@@ -54,7 +54,7 @@ final class MetalSurface implements GpuSurfaceBackend {
 		this.encoder = encoder;
 		this.view = SDLMetal.SDL_Metal_CreateView(window);
 		this.layer = SDLMetal.SDL_Metal_GetLayer(this.view);
-		if (DisplayLink.ENABLED) DisplayLink.surface = this;
+		DisplayLink.surface = this;
 	}
 
 	@Override
@@ -77,11 +77,16 @@ final class MetalSurface implements GpuSurfaceBackend {
 		this.linkActive = this.linkReady = false;
 	}
 
-	boolean beginDisplayFrame(int fps) {
+	boolean beginDisplayFrame(int fps, boolean enabled) {
 		this.linkReady = false;
-		boolean useLink = this.vsync && !this.isIconified.getAsBoolean() && fps >= 30 && System.nanoTime() >= this.linkRetryAt;
+		boolean useLink = enabled && this.vsync && !this.isIconified.getAsBoolean() && fps >= 30 && System.nanoTime() >= this.linkRetryAt;
 		if (!useLink) {
 			this.closeDisplayLink();
+			if (!enabled) {
+				// An explicit off/on comparison gets a fresh attempt, even after an occlusion timeout.
+				this.linkRetryAt = 0;
+				this.linkMisses = 0;
+			}
 			return false;
 		}
 		if (!this.linkActive) Native.presentDrain();

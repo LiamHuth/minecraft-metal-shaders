@@ -1,0 +1,11 @@
+{
+	"key.category.mcopt.display": "Metal Shaders",
+	"key.mcopt.full_scene_hdr": "Alternar HDR de escena completa",
+	"key.mcopt.promotion": "Alternar sincronización ProMotion",
+	"message.mcopt.hdr_scene": "HDR: Escena completa",
+	"message.mcopt.hdr_highlights": "HDR: Brillos",
+	"message.mcopt.hdr_unavailable": "Modo HDR guardado; activa shaders y salida HDR en una pantalla compatible",
+	"message.mcopt.promotion_on": "Sincronización ProMotion: Sí",
+	"message.mcopt.promotion_off": "Sincronización ProMotion: No",
+	"message.mcopt.promotion_vsync": "Sincronización ProMotion: Sí (activa VSync para usarla)"
+}

@@ -2,7 +2,7 @@ package mcopt.metal;
 
 /** Experimental display-driven pacing, before input polling. All access is on the render thread. */
 public final class DisplayLink {
-	public static final boolean ENABLED = Boolean.getBoolean("mcopt.metal.displayLink");
+	public static final String KEY = "mcopt.metal.displayLink";
 	static final int LATENCY = Integer.getInteger("mcopt.metal.displayLink.latency", 1) == 2 ? 2 : 1;
 	static final boolean LOG = Boolean.parseBoolean(System.getProperty("mcopt.metal.displayLink.log", "true"));
 	static MetalSurface surface;
@@ -11,9 +11,13 @@ public final class DisplayLink {
 
 	private DisplayLink() {}
 
+	/** Live preference; a key press takes effect at the next frame boundary. */
+	public static boolean enabled() { return Boolean.getBoolean(KEY); }
+
 	public static void beforeInput(int cap) {
 		pacedCap = cap;
-		paced = ENABLED && surface != null && surface.beginDisplayFrame(cap);
+		// Also visit the surface when disabled, so it can release the previous link safely.
+		paced = surface != null && surface.beginDisplayFrame(cap, enabled());
 	}
 
 	/** Keep vanilla's limiter if the cap decreased during this frame (e.g. minimize/AFK). */

@@ -1,0 +1,11 @@
+{
+	"key.category.mcopt.display": "Metal Shaders",
+	"key.mcopt.full_scene_hdr": "Toggle full-scene HDR",
+	"key.mcopt.promotion": "Toggle ProMotion pacing",
+	"message.mcopt.hdr_scene": "HDR: Full scene",
+	"message.mcopt.hdr_highlights": "HDR: Highlights",
+	"message.mcopt.hdr_unavailable": "HDR mode saved; enable shaders and HDR output on a supported display",
+	"message.mcopt.promotion_on": "ProMotion pacing: On",
+	"message.mcopt.promotion_off": "ProMotion pacing: Off",
+	"message.mcopt.promotion_vsync": "ProMotion pacing: On (enable VSync to use it)"
+}
