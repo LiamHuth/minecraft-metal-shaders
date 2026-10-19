@@ -21,6 +21,11 @@ abstract class FramerateLimiterMixin {
 
 	@Inject(method = "limitDisplayFPS", at = @At("HEAD"), cancellable = true)
 	private static void mcopt$preciseWait(int framerateLimit, CallbackInfo ci) {
+		if (mcopt.metal.DisplayLink.paced(framerateLimit)) {
+			lastFrameTime = System.nanoTime();
+			ci.cancel();
+			return;
+		}
 		if (!FrameWait.ENABLED) return;
 		long remaining = lastFrameTime + 1_000_000_000L / framerateLimit - System.nanoTime();
 		if (remaining > 0) FrameWait.sleep(remaining);

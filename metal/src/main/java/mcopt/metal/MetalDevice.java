@@ -97,7 +97,7 @@ final class MetalDevice implements GpuDeviceBackend {
 
 	@Override
 	public GpuSurfaceBackend createSurface(long windowHandle, BooleanSupplier isIconified) {
-		return new MetalSurface(this.ctx, this.encoder, windowHandle);
+		return new MetalSurface(this.ctx, this.encoder, windowHandle, isIconified);
 	}
 
 	@Override

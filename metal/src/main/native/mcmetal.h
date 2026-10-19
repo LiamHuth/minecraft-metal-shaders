@@ -62,6 +62,7 @@ typedef struct {
 	// whether anything in it wrote depth since (a pipeline whose depth state writes, an in-place depth clear)
 	int tlDepthCleared, tlDepthWritten;
 	float tlDepthClearValue;
+	id displayLinkFrame; // owned until commit: CAMetalDisplayLink drawable + deadlines
 } Enc;
 
 id<MTLCommandBuffer> mc_pre(Enc *enc);

@@ -112,6 +112,11 @@ final class Native {
 	private static final MethodHandle PRESENT_SKIPPED = fn("mc_present_skipped", false, JAVA_LONG);
 	private static final MethodHandle PRESENT_QUEUED_ACQUIRE = fn("mc_present_queued_acquire", false, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle PRESENT_DROPPED = fn("mc_present_dropped", false, JAVA_LONG);
+	private static final MethodHandle DISPLAY_LINK_CREATE = fn("mc_display_link_create", false, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT);
+	private static final MethodHandle DISPLAY_LINK_BEGIN = fn("mc_display_link_begin", false, JAVA_INT, JAVA_LONG, JAVA_INT);
+	private static final MethodHandle DISPLAY_LINK_CLOSE = fn("mc_display_link_close", false, null, JAVA_LONG);
+	private static final MethodHandle PRESENT_DISPLAY_LINK = fn("mc_present_display_link", false, null, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG);
+	private static final MethodHandle PRESENT_DRAIN = fn("mc_present_drain", false, null);
 	private static final MethodHandle PACE_ADAPT = fn("mc_pace_adapt", false, null, JAVA_INT);
 	private static final MethodHandle PACE_FOLLOW = fn("mc_pace_follow", false, null, JAVA_INT);
 	private static final MethodHandle PACE_DISPLAY = fn("mc_pace_display", false, JAVA_INT);
@@ -236,6 +241,11 @@ final class Native {
 	static int presentQueued(long enc, long drawable, long texture) { if (FrameCapture.FULL && FrameCapture.active()) FrameCapture.present(texture); try { return (int) PRESENT_QUEUED.invokeExact(enc, drawable, texture); } catch (Throwable t) { throw rethrow(t); } }
 	static long presentSkipped() { try { return (long) PRESENT_SKIPPED.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
 	static int presentQueuedAcquire(long enc, long layer, long texture, long cadence) { if (FrameCapture.FULL && FrameCapture.active()) FrameCapture.present(texture); try { return (int) PRESENT_QUEUED_ACQUIRE.invokeExact(enc, layer, texture, cadence); } catch (Throwable t) { throw rethrow(t); } }
+	static long displayLinkCreate(long layer, int latency, int log) { try { return (long) DISPLAY_LINK_CREATE.invokeExact(layer, latency, log); } catch (Throwable t) { throw rethrow(t); } }
+	static boolean displayLinkBegin(long link, int fps) { try { return (int) DISPLAY_LINK_BEGIN.invokeExact(link, fps) != 0; } catch (Throwable t) { throw rethrow(t); } }
+	static void displayLinkClose(long link) { try { DISPLAY_LINK_CLOSE.invokeExact(link); } catch (Throwable t) { throw rethrow(t); } }
+	static void presentDisplayLink(long enc, long link, long texture, long cadence) { if (FrameCapture.FULL && FrameCapture.active()) FrameCapture.present(texture); try { PRESENT_DISPLAY_LINK.invokeExact(enc, link, texture, cadence); } catch (Throwable t) { throw rethrow(t); } }
+	static void presentDrain() { try { PRESENT_DRAIN.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
 	static void paceAdapt(int on) { try { PACE_ADAPT.invokeExact(on); } catch (Throwable t) { throw rethrow(t); } }
 	static void paceFollow(int on) { try { PACE_FOLLOW.invokeExact(on); } catch (Throwable t) { throw rethrow(t); } }
 	static int paceDisplay() { try { return (int) PACE_DISPLAY.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }

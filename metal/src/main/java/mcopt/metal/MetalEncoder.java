@@ -839,6 +839,15 @@ final class MetalEncoder implements CommandEncoderBackend {
 		}
 	}
 
+	void presentDisplayLink(long link, GpuTextureView view) {
+		this.presentedThisSubmit = true;
+		this.flushClear(view.texture());
+		Native.presentDisplayLink(this.enc, link, ((MetalTexture.View) view).handle,
+			GPU_TIMES && this.submitIndex < Integer.MAX_VALUE ? this.submitIndex : -1);
+		if (GPU_TIMES) GpuTimes.presentQueued(this.submitIndex); // native registers the supplied drawable
+		this.statPresents++;
+	}
+
 	void presentTexture(long drawable, GpuTextureView view) {
 		MetalEvents.Operation event = MetalEvents.begin("present", this.submitIndex, 0);
 		try {

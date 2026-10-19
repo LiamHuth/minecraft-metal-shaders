@@ -37,6 +37,10 @@ final class MetalSurface implements GpuSurfaceBackend {
 	 */
 	private static final boolean PACE_FOLLOW = Boolean.getBoolean("mcopt.metal.paceFollow");
 	private boolean paced;
+	private boolean vsync, linkActive, linkReady;
+	private long displayLink, linkRetryAt;
+	private int linkMisses;
+	private final java.util.function.BooleanSupplier isIconified;
 	/** (1.1.1) the display whose refreshes the pacer follows, as last logged (PACE_FOLLOW), and a frame counter for the check. */
 	private int loggedDisplay, paceFrames;
 	private final long ctx;
@@ -44,22 +48,60 @@ final class MetalSurface implements GpuSurfaceBackend {
 	private final long view;
 	private final long layer;
 
-	MetalSurface(long ctx, MetalEncoder encoder, long window) {
+	MetalSurface(long ctx, MetalEncoder encoder, long window, java.util.function.BooleanSupplier isIconified) {
+		this.isIconified = isIconified;
 		this.ctx = ctx;
 		this.encoder = encoder;
 		this.view = SDLMetal.SDL_Metal_CreateView(window);
 		this.layer = SDLMetal.SDL_Metal_GetLayer(this.view);
+		if (DisplayLink.ENABLED) DisplayLink.surface = this;
 	}
 
 	@Override
 	public void configure(GpuSurface.Configuration config) {
+		// An event may resize/reconfigure the layer after frame start. Discard that old drawable.
+		this.closeDisplayLink();
 		boolean vsync = config.presentMode() == GpuSurface.PresentMode.FIFO;
+		this.vsync = vsync;
 		this.paced = !vsync && PACE;
 		if (PACE_ADAPT) Native.paceAdapt(this.paced ? 1 : 0);
 		if (PACE_FOLLOW) Native.paceFollow(1);
 		// native shading's XDR output (mcopt.shade.xdr): decided before the layer's format is set; a constant false without shading
 		if (mcopt.metal.shade.Shade.ENABLED) mcopt.metal.shade.dims.ShadeXdr.configure(this.layer);
 		Native.layerConfigure(this.ctx, this.layer, config.width(), config.height(), (vsync || PACE_SYNC && this.paced ? 1 : 0) | DRAWABLES << 8);
+	}
+
+	private void closeDisplayLink() {
+		if (this.displayLink != 0) Native.displayLinkClose(this.displayLink);
+		this.displayLink = 0;
+		this.linkActive = this.linkReady = false;
+	}
+
+	boolean beginDisplayFrame(int fps) {
+		this.linkReady = false;
+		boolean useLink = this.vsync && !this.isIconified.getAsBoolean() && fps >= 30 && System.nanoTime() >= this.linkRetryAt;
+		if (!useLink) {
+			this.closeDisplayLink();
+			return false;
+		}
+		if (!this.linkActive) Native.presentDrain();
+		if (this.displayLink == 0) {
+			this.displayLink = Native.displayLinkCreate(this.layer, DisplayLink.LATENCY, DisplayLink.LOG ? 1 : 0);
+		}
+		this.linkActive = this.displayLink != 0;
+		if (!this.linkActive) return false;
+		long start = WaitStats.ON ? System.nanoTime() : 0;
+		this.linkReady = Native.displayLinkBegin(this.displayLink, fps);
+		if (WaitStats.ON) WaitStats.wait(WaitStats.PACE, System.nanoTime() - start, 0);
+		if (this.linkReady) this.linkMisses = 0;
+		else if (++this.linkMisses >= 3) {
+			// Occluded windows/display changes may stop updates. Resume legacy presentation,
+			// retrying later, instead of leaving the last image indefinitely on screen.
+			this.closeDisplayLink();
+			this.linkRetryAt = System.nanoTime() + 2_000_000_000L;
+			this.linkMisses = 0;
+		}
+		return this.linkReady;
 	}
 
 	@Override
@@ -75,6 +117,11 @@ final class MetalSurface implements GpuSurfaceBackend {
 	public void blitFromTexture(CommandEncoderBackend commandEncoder, GpuTextureView textureView) {
 		// mcopt.rec hook: the opt-in recorder (-Dmcopt.rec, mcopt.metal.rec) takes the finished frame, GUI included. Rec.ON is a constant false without it.
 		if (mcopt.metal.rec.Rec.ON) mcopt.metal.rec.Rec.frame(this.encoder, textureView);
+		if (this.linkActive) {
+			if (this.linkReady) this.encoder.presentDisplayLink(this.displayLink, textureView);
+			this.linkReady = false;
+			return; // no nextDrawable (including timeouts) while the link owns acquisition
+		}
 		if (this.paced && PACE_FOLLOW && (this.paceFrames++ & 255) == 0) {
 			int display = Native.paceDisplay();
 			if (display != 0 && display != this.loggedDisplay) {
@@ -118,6 +165,9 @@ final class MetalSurface implements GpuSurfaceBackend {
 
 	@Override
 	public void close() {
+		if (DisplayLink.surface == this) DisplayLink.surface = null;
+		this.closeDisplayLink();
+		Native.presentDrain();
 		SDLMetal.SDL_Metal_DestroyView(this.view);
 	}
 }

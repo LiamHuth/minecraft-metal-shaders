@@ -3,6 +3,7 @@
 // Built without ARC so ownership is explicit. Hot encoder calls allocate nothing, so they need no autorelease pool.
 #include <stdatomic.h>
 #import "mcmetal.h"
+#import "mcdisplaylink.h"
 #import <CoreVideo/CoreVideo.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <QuartzCore/CABase.h>
@@ -978,7 +979,13 @@ id<MTLCommandBuffer> mc_enc_commit(Enc *enc) {
 	endRender(enc);
 	id<MTLCommandBuffer> c = cmd(enc);
 	if (diagOn) [c addCompletedHandler:^(id<MTLCommandBuffer> cb) { diagReport("main", n, t, big, mainBytes, cb); }];
+	if (enc->displayLinkFrame) mc_display_link_prepare(enc->displayLinkFrame, c);
 	[c commit];
+	if (enc->displayLinkFrame) {
+		mc_display_link_present(enc->displayLinkFrame);
+		[enc->displayLinkFrame release];
+		enc->displayLinkFrame = nil;
+	}
 	if (gcOn) {  // -Dmcopt.metal.gpuCount: the next frame's encoders get a new record and frame index
 		gcFrame++;
 		[gcCurrent release];
@@ -1882,7 +1889,9 @@ id<CAMetalDrawable> mc_layer_next(CAMetalLayer *layer) {
 }
 
 // Draws src into the drawable (flipped back to top-down) and schedules the present on the current command buffer.
-void mc_present(Enc *enc, id<CAMetalDrawable> drawable, id<MTLTexture> src) {
+void mc_cadence_present(id<CAMetalDrawable> drawable, int slot);
+
+static void encodePresent(Enc *enc, id<CAMetalDrawable> drawable, id<MTLTexture> src) {
 	endBlit(enc);
 	endRender(enc);
 	@autoreleasepool {
@@ -1902,9 +1911,22 @@ void mc_present(Enc *enc, id<CAMetalDrawable> drawable, id<MTLTexture> src) {
 		}
 		double encodedAt = CACurrentMediaTime();
 		[cmd(enc) addCompletedHandler:^(id<MTLCommandBuffer> b) { gpuLatency += (CACurrentMediaTime() - encodedAt - gpuLatency) * 0.1; }];
-		paceWatch(drawable);
-		[cmd(enc) presentDrawable:drawable];
 	}
+}
+
+void mc_present(Enc *enc, id<CAMetalDrawable> drawable, id<MTLTexture> src) {
+	encodePresent(enc, drawable, src);
+	paceWatch(drawable);
+	[cmd(enc) presentDrawable:drawable];
+}
+
+void mc_present_display_link(Enc *enc, void *link, id<MTLTexture> src, long cadence) {
+	id<CAMetalDrawable> drawable = mc_display_link_drawable(link);
+	if (!drawable) return;
+	encodePresent(enc, drawable, src);
+	if (cadence >= 0) mc_cadence_present(drawable, (int) cadence);
+	[enc->displayLinkFrame release];
+	enc->displayLinkFrame = mc_display_link_take(link);
 }
 
 // ---- present off the frame's command buffer (opt-in: -Dmcopt.metal.presentQueue) ----
@@ -2077,3 +2099,14 @@ static void pqSubmit(void) {
 }
 
 long mc_present_skipped(void) { return atomic_load(&pqSkipped); }
+
+// Before activating a display link, finish legacy drawable acquisition on the worker.
+// Called only between frames, after the previous frame's commit.
+void mc_present_drain(void) {
+	if (pqWorker) dispatch_sync(pqWorker, ^{});
+	if (pqQueue) { @autoreleasepool {
+		id<MTLCommandBuffer> c = [pqQueue commandBuffer];
+		[c commit];
+		[c waitUntilCompleted];
+	} }
+}
