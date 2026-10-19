@@ -4,6 +4,7 @@
 // hidden windows, sleep and display changes cannot trap the game/event loop.
 #import "mcdisplaylink.h"
 #import <QuartzCore/CAMetalDisplayLink.h>
+#import <QuartzCore/CATransaction.h>
 #import <AppKit/AppKit.h>
 #include <math.h>
 
@@ -22,12 +23,14 @@ static NSString *const MCDisplayMode = @"mcopt.display-link";
 @interface MCDisplayFrame : NSObject {
 @public
     id<CAMetalDrawable> drawable;
+    id<MTLCommandBuffer> commandBuffer;
     MCDisplayStats *stats;
     double began, deadline;
+    BOOL presented;
 }
 @end
 @implementation MCDisplayFrame
-- (void)dealloc { [drawable release]; [stats release]; [super dealloc]; }
+- (void)dealloc { [commandBuffer release]; [drawable release]; [stats release]; [super dealloc]; }
 @end
 
 @interface MCDisplayLink : NSObject <CAMetalDisplayLinkDelegate> {
@@ -37,9 +40,10 @@ static NSString *const MCDisplayMode = @"mcopt.display-link";
     NSRunLoop *runLoop;
     MCDisplayFrame *frame;
     MCDisplayStats *stats;
+    NSMutableArray<MCDisplayFrame *> *inFlight;
     int requestedRate, logging;
     double nextPresentation;
-    BOOL waiting;
+    BOOL waiting, retiring;
 }
 @end
 @implementation MCDisplayLink
@@ -61,6 +65,7 @@ static NSString *const MCDisplayMode = @"mcopt.display-link";
     [link invalidate];
     [link release];
     [frame release];
+    [inFlight release];
     [layer release];
     [runLoop release];
     [stats release];
@@ -91,6 +96,7 @@ void *mc_display_link_create(CAMetalLayer *layer, int latency, int log) {
         // SDL input is still polled immediately after this wait returns.
         CFRunLoopAddCommonMode(p->runLoop.getCFRunLoop, (CFStringRef)MCDisplayMode);
         p->stats = [MCDisplayStats new];
+        p->inFlight = [NSMutableArray new];
         p->stats->lastReport = CACurrentMediaTime();
         p->logging = log;
         p->link = [[CAMetalDisplayLink alloc] initWithMetalLayer:layer];
@@ -116,16 +122,41 @@ void mc_display_link_pause(void *handle) {
     @synchronized(p->stats) { p->stats->lastPresented = 0; }
 }
 
-void mc_display_link_close(void *handle) {
+// Only the render thread touches this list. Status is polled, never waited on: a delayed
+// GPU must not block input or make us invalidate the drawable's owner prematurely.
+static void retireFrames(MCDisplayLink *p) {
+    for (NSInteger i = (NSInteger)p->inFlight.count - 1; i >= 0; i--) {
+        MCDisplayFrame *f = p->inFlight[i];
+        if (f->presented && f->commandBuffer && f->commandBuffer.status >= MTLCommandBufferStatusCompleted)
+            [p->inFlight removeObjectAtIndex:i];
+    }
+}
+
+int mc_display_link_close(void *handle) {
     MCDisplayLink *p = handle;
-    if (!p) return;
+    if (!p) return 1;
+    p->waiting = NO;
+    // This drawable was acquired but never encoded. Frames handed to an encoder are
+    // held separately, including the interval before that encoder commits them.
+    [p->frame release];
+    p->frame = nil;
+    retireFrames(p);
+    if (p->inFlight.count) {
+        if (!p->retiring && p->logging) NSLog(@"[mcopt] display link: switching, waiting for %lu GPU frame(s)", (unsigned long)p->inFlight.count);
+        p->retiring = YES;
+        return 0; // caller keeps ownership, skips presentation and retries next frame
+    }
     mc_display_link_pause(p);
-    [p->link removeFromRunLoop:p->runLoop forMode:MCDisplayMode];
     p->link.delegate = nil;
+    // invalidate already removes all run-loop registrations. Do it exactly once and
+    // only after every encoded drawable has been submitted, presented and completed.
     [p->link invalidate];
     [p->link release];
     p->link = nil; // invalidate exactly once; repeated invalidation crashes on macOS 27
+    [CATransaction flush];
+    if (p->logging) NSLog(@"[mcopt] display link: stopped after GPU frames completed");
     [p release];
+    return 1;
 }
 
 static void report(MCDisplayLink *p) {
@@ -149,8 +180,9 @@ static void report(MCDisplayLink *p) {
 
 int mc_display_link_begin(void *handle, int cap) {
     MCDisplayLink *p = handle;
-    if (!p) return 0;
+    if (!p || p->retiring) return 0;
     @autoreleasepool {
+        retireFrames(p);
         [p->frame release]; // a frame that didn't draw (e.g. reconfiguration/loading)
         p->frame = nil;
         int maximum = maximumRate(p->layer);
@@ -184,11 +216,13 @@ id mc_display_link_take(void *handle) {
     MCDisplayLink *p = handle;
     MCDisplayFrame *frame = p->frame;
     p->frame = nil;
+    if (frame) [p->inFlight addObject:frame];
     return frame;
 }
 
 void mc_display_link_prepare(id object, id<MTLCommandBuffer> cb) {
     MCDisplayFrame *f = object;
+    f->commandBuffer = [cb retain];
     MCDisplayStats *s = f->stats; // retained by the copied blocks until GPU/display completes
     double began = f->began;
     [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
@@ -217,4 +251,5 @@ void mc_display_link_present(id object) {
     // Commit all rendering first, then call the drawable directly; no scheduled-handler delay.
     if (CACurrentMediaTime() > f->deadline) { @synchronized(f->stats) { f->stats->deadlines++; } }
     [f->drawable present];
+    f->presented = YES;
 }

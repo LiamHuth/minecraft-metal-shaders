@@ -5,7 +5,12 @@
 	"message.mcopt.hdr_scene": "HDR: Escena completa",
 	"message.mcopt.hdr_highlights": "HDR: Brillos",
 	"message.mcopt.hdr_unavailable": "Modo HDR guardado; activa shaders y salida HDR en una pantalla compatible",
-	"message.mcopt.promotion_on": "Sincronización ProMotion: Sí",
 	"message.mcopt.promotion_off": "Sincronización ProMotion: No",
-	"message.mcopt.promotion_vsync": "Sincronización ProMotion: Sí (activa VSync para usarla)"
+	"message.mcopt.promotion_vsync": "Sincronización ProMotion: Esperando VSync",
+	"message.mcopt.promotion_active": "Sincronización ProMotion: Activa",
+	"message.mcopt.promotion_switching": "Sincronización ProMotion: Cambiando…",
+	"message.mcopt.promotion_paused": "Sincronización ProMotion: En pausa (ventana oculta o límite bajo de FPS)",
+	"message.mcopt.promotion_waiting": "Sincronización ProMotion: Esperando pantalla",
+	"message.mcopt.promotion_fallback": "Sincronización ProMotion: Modo estándar (reintentando)",
+	"message.mcopt.promotion_unavailable": "Sincronización ProMotion: No disponible"
 }

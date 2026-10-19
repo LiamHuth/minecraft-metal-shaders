@@ -5,7 +5,12 @@
 	"message.mcopt.hdr_scene": "HDR: Full scene",
 	"message.mcopt.hdr_highlights": "HDR: Highlights",
 	"message.mcopt.hdr_unavailable": "HDR mode saved; enable shaders and HDR output on a supported display",
-	"message.mcopt.promotion_on": "ProMotion pacing: On",
 	"message.mcopt.promotion_off": "ProMotion pacing: Off",
-	"message.mcopt.promotion_vsync": "ProMotion pacing: On (enable VSync to use it)"
+	"message.mcopt.promotion_vsync": "ProMotion pacing: Waiting for VSync",
+	"message.mcopt.promotion_active": "ProMotion pacing: Active",
+	"message.mcopt.promotion_switching": "ProMotion pacing: Switching…",
+	"message.mcopt.promotion_paused": "ProMotion pacing: Paused (window hidden or low FPS cap)",
+	"message.mcopt.promotion_waiting": "ProMotion pacing: Waiting for display",
+	"message.mcopt.promotion_fallback": "ProMotion pacing: Standard fallback (retrying)",
+	"message.mcopt.promotion_unavailable": "ProMotion pacing: Unavailable"
 }

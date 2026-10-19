@@ -30,5 +30,6 @@ abstract class ShadeDebugMixin {
 	@Inject(method = "display", at = @At("TAIL"))
 	private void mcopt$worldResolution(DebugScreenDisplayer displayer, Level level, LevelChunk clientChunk, LevelChunk serverChunk, CallbackInfo ci) {
 		if (!"false".equals(System.getProperty("mcopt.shade.f3"))) displayer.addPriorityLine(ShadeResolution.debugLine());
+		displayer.addPriorityLine(net.minecraft.network.chat.Component.translatable(mcopt.metal.DisplayLink.status().messageKey).getString());
 	}
 }

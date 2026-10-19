@@ -37,7 +37,9 @@ final class MetalSurface implements GpuSurfaceBackend {
 	 */
 	private static final boolean PACE_FOLLOW = Boolean.getBoolean("mcopt.metal.paceFollow");
 	private boolean paced;
-	private boolean vsync, linkActive, linkReady;
+	private boolean vsync, linkActive, linkReady, linkRetiring;
+	private GpuSurface.Configuration pendingConfiguration;
+	private DisplayLink.Status linkStatus = DisplayLink.Status.OFF;
 	private long displayLink, linkRetryAt;
 	private int linkMisses;
 	private final java.util.function.BooleanSupplier isIconified;
@@ -59,8 +61,16 @@ final class MetalSurface implements GpuSurfaceBackend {
 
 	@Override
 	public void configure(GpuSurface.Configuration config) {
-		// An event may resize/reconfigure the layer after frame start. Discard that old drawable.
-		this.closeDisplayLink();
+		// Resize/VSync events can arrive after acquisition, or even after a drawable was
+		// encoded. Keep the old layer intact until those frames finish; coalesce resizes.
+		this.pendingConfiguration = config;
+		this.applyPendingConfiguration();
+	}
+
+	private void applyPendingConfiguration() {
+		if (this.pendingConfiguration == null || !this.closeDisplayLink()) return;
+		GpuSurface.Configuration config = this.pendingConfiguration;
+		this.pendingConfiguration = null;
 		boolean vsync = config.presentMode() == GpuSurface.PresentMode.FIFO;
 		this.vsync = vsync;
 		this.paced = !vsync && PACE;
@@ -71,17 +81,30 @@ final class MetalSurface implements GpuSurfaceBackend {
 		Native.layerConfigure(this.ctx, this.layer, config.width(), config.height(), (vsync || PACE_SYNC && this.paced ? 1 : 0) | DRAWABLES << 8);
 	}
 
-	private void closeDisplayLink() {
-		if (this.displayLink != 0) Native.displayLinkClose(this.displayLink);
+	private boolean closeDisplayLink() {
+		this.linkReady = false;
+		if (this.displayLink != 0) {
+			this.linkRetiring = true;
+			this.linkStatus = DisplayLink.Status.SWITCHING;
+			if (!Native.displayLinkClose(this.displayLink)) return false;
+		}
 		this.displayLink = 0;
-		this.linkActive = this.linkReady = false;
+		this.linkActive = this.linkRetiring = false;
+		return true;
 	}
 
 	boolean beginDisplayFrame(int fps, boolean enabled) {
 		this.linkReady = false;
+		// A retiring link still owns acquisition. Do not call nextDrawable or mutate
+		// layer properties until the nonblocking GPU-completion check succeeds.
+		if (this.linkRetiring && !this.closeDisplayLink()) return false;
+		this.applyPendingConfiguration();
+		if (this.pendingConfiguration != null) return false;
 		boolean useLink = enabled && this.vsync && !this.isIconified.getAsBoolean() && fps >= 30 && System.nanoTime() >= this.linkRetryAt;
 		if (!useLink) {
-			this.closeDisplayLink();
+			if (!this.closeDisplayLink()) return false;
+			this.linkStatus = !enabled ? DisplayLink.Status.OFF : !this.vsync ? DisplayLink.Status.VSYNC
+				: this.isIconified.getAsBoolean() || fps < 30 ? DisplayLink.Status.PAUSED : DisplayLink.Status.FALLBACK;
 			if (!enabled) {
 				// An explicit off/on comparison gets a fresh attempt, even after an occlusion timeout.
 				this.linkRetryAt = 0;
@@ -94,9 +117,13 @@ final class MetalSurface implements GpuSurfaceBackend {
 			this.displayLink = Native.displayLinkCreate(this.layer, DisplayLink.LATENCY, DisplayLink.LOG ? 1 : 0);
 		}
 		this.linkActive = this.displayLink != 0;
-		if (!this.linkActive) return false;
+		if (!this.linkActive) {
+			this.linkStatus = DisplayLink.Status.UNAVAILABLE;
+			return false;
+		}
 		long start = WaitStats.ON ? System.nanoTime() : 0;
 		this.linkReady = Native.displayLinkBegin(this.displayLink, fps);
+		this.linkStatus = this.linkReady ? DisplayLink.Status.ACTIVE : DisplayLink.Status.WAITING;
 		if (WaitStats.ON) WaitStats.wait(WaitStats.PACE, System.nanoTime() - start, 0);
 		if (this.linkReady) this.linkMisses = 0;
 		else if (++this.linkMisses >= 3) {
@@ -108,6 +135,8 @@ final class MetalSurface implements GpuSurfaceBackend {
 		}
 		return this.linkReady;
 	}
+
+	DisplayLink.Status displayLinkStatus() { return this.linkStatus; }
 
 	@Override
 	public boolean isSuboptimal() {
@@ -171,7 +200,9 @@ final class MetalSurface implements GpuSurfaceBackend {
 	@Override
 	public void close() {
 		if (DisplayLink.surface == this) DisplayLink.surface = null;
-		this.closeDisplayLink();
+		// Final shutdown already drains the renderer. Live transitions above never wait.
+		this.encoder.waitIdle();
+		if (!this.closeDisplayLink()) throw new IllegalStateException("Display-link frame was not submitted before surface shutdown");
 		Native.presentDrain();
 		SDLMetal.SDL_Metal_DestroyView(this.view);
 	}

@@ -15,6 +15,8 @@ public final class DisplayKeybinds {
 	public static final KeyMapping HDR = unbound("key.mcopt.full_scene_hdr");
 	public static final KeyMapping PROMOTION = unbound("key.mcopt.promotion");
 	private static final String HDR_MODE = "mcopt.shade.hdrMode";
+	private static long promotionMessageUntil;
+	private static DisplayLink.Status promotionMessageStatus;
 
 	private DisplayKeybinds() {}
 
@@ -33,8 +35,15 @@ public final class DisplayKeybinds {
 		// Always drain clicks: typing in chat or assigning a shortcut must not queue a later toggle.
 		boolean hdr = clicked(HDR), promotion = clicked(PROMOTION);
 		if (mc.level == null || mc.gui.screen() != null || mc.gui.overlay() != null) return;
-		if (hdr) toggleHdr(mc);
+		if (hdr) {
+			promotionMessageUntil = 0;
+			toggleHdr(mc);
+		}
 		if (promotion) togglePromotion(mc);
+		else if (System.nanoTime() < promotionMessageUntil && DisplayLink.status() != promotionMessageStatus) {
+			promotionMessageStatus = DisplayLink.status();
+			mc.gui.hud.setOverlayMessage(Component.translatable(promotionMessageStatus.messageKey), false);
+		}
 		if (hdr || promotion) ShadeSettings.save(mc.gameDirectory.toPath());
 	}
 
@@ -56,9 +65,9 @@ public final class DisplayKeybinds {
 		boolean enabled = !DisplayLink.enabled();
 		set(DisplayLink.KEY, Boolean.toString(enabled));
 		// Only request the mode here. The current drawable/limiter stays valid until next frame.
-		String message = !enabled ? "message.mcopt.promotion_off"
-			: !mc.options.enableVsync().get() ? "message.mcopt.promotion_vsync" : "message.mcopt.promotion_on";
-		mc.gui.hud.setOverlayMessage(Component.translatable(message), false);
+		promotionMessageUntil = System.nanoTime() + 5_000_000_000L;
+		promotionMessageStatus = null;
+		mc.gui.hud.setOverlayMessage(Component.translatable("message.mcopt.promotion_switching"), false);
 	}
 
 	private static void set(String key, String value) {

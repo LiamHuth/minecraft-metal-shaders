@@ -9,6 +9,7 @@ Ctx *mc_create(char *, int, char *, int);
 Enc *mc_enc_new(Ctx *);
 void mc_layer_configure(Ctx *, CAMetalLayer *, int, int, int);
 void mc_present_display_link(Enc *, void *, id<MTLTexture>, long);
+void mc_present(Enc *, id<CAMetalDrawable>, id<MTLTexture>);
 id<MTLCommandBuffer> mc_enc_commit(Enc *);
 void mc_xdr_enable(int);
 void mc_xdr_full_frame(Enc *, id<MTLTexture>, id<MTLTexture>, float, float);
@@ -18,6 +19,57 @@ static void events(void) {
     [NSApp updateWindows];
 }
 static void require(BOOL ok, const char *msg) { if (!ok) { fprintf(stderr,"FAIL: %s\n",msg); exit(1); } }
+static void closeLink(void *link) {
+    double start = CACurrentMediaTime();
+    while (!mc_display_link_close(link)) {
+        require(CACurrentMediaTime()-start < 2,"retirement finished within two seconds");
+        events(); usleep(1000);
+    }
+}
+static void completed(id<MTLCommandBuffer> cb) {
+    double start = CACurrentMediaTime();
+    while (cb.status < MTLCommandBufferStatusCompleted) {
+        require(CACurrentMediaTime()-start < 2,"GPU completion bounded");
+        events(); usleep(1000);
+    }
+    require(cb.status == MTLCommandBufferStatusCompleted,"GPU command completed");
+}
+
+// Keep an actual presentation command in flight during a disable request. The previous
+// implementation invalidated the display link here. Exercise both pre-commit ownership
+// and GPU work delayed by a CPU-signalled event, without blocking the UI thread.
+static void transitionCheck(Ctx *ctx, Enc *enc, CAMetalLayer *layer, id<MTLTexture> src) {
+    for (int i=0; i<12; i++) { @autoreleasepool {
+        void *link = mc_display_link_create(layer,1,0);
+        require(link && mc_display_link_begin(link,120),"transition acquired drawable");
+        id<MTLSharedEvent> gate = [ctx->device newSharedEvent];
+        id<MTLCommandBuffer> cb = mc_frame_cmd(enc);
+        [cb encodeWaitForEvent:gate value:1];
+        mc_present_display_link(enc,link,src,-1);
+        double start = CACurrentMediaTime();
+        require(!mc_display_link_close(link),"cannot invalidate an encoded, uncommitted frame");
+        require(CACurrentMediaTime()-start < .050,"uncommitted retirement is nonblocking");
+        require(!mc_display_link_begin(link,120),"retiring link cannot acquire more drawables");
+        id<MTLCommandBuffer> done = mc_enc_commit(enc);
+        start = CACurrentMediaTime();
+        require(!mc_display_link_close(link),"cannot invalidate while GPU holds the drawable");
+        require(CACurrentMediaTime()-start < .050,"GPU retirement is nonblocking");
+        // Pump events while the deliberately delayed frame still belongs to the link.
+        events();
+        gate.signaledValue = 1;
+        closeLink(link);
+        completed(done); [done release]; [gate release];
+        // Verify the same layer can return to normal presentation and then start again.
+        id<CAMetalDrawable> drawable = [layer nextDrawable];
+        require(drawable != nil,"legacy acquisition after retirement");
+        mc_present(enc,drawable,src);
+        done = mc_enc_commit(enc); completed(done); [done release];
+    } }
+    void *link = mc_display_link_create(layer,1,0);
+    require(link && mc_display_link_begin(link,120),"acquired unused drawable");
+    require(mc_display_link_close(link),"unused drawable can be discarded without GPU work");
+    puts("PASS: 12 delayed-GPU and uncommitted transitions, legacy restart, unused drawable");
+}
 int main(int argc, const char **argv) { @autoreleasepool {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
@@ -86,8 +138,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
             [b endEncoding];
             if (i==100) usleep(25000); // deliberately miss a deadline: no deadlock or corrupt output
             id<MTLCommandBuffer> done = mc_enc_commit(enc);
-            [done waitUntilCompleted];
-            require(done.status == MTLCommandBufferStatusCompleted,"GPU command completed");
+            completed(done);
             if (mode) {
                 _Float16 *px = readback.contents;
                 require(px[0] > 1.9 && px[1] > 1.9 && px[2] > 1.9,"full-scene HDR retained above SDR white");
@@ -97,7 +148,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
             }
             [done release];
             if (i==1350 || i==1450) {
-                mc_display_link_close(link);
+                closeLink(link);
                 [window setContentSize:NSMakeSize(i==1350?560:480,300)]; events();
                 mc_layer_configure(ctx,layer,480,300,1);
                 layer.framebufferOnly = NO;
@@ -116,7 +167,8 @@ int main(int argc, const char **argv) { @autoreleasepool {
         require(CACurrentMediaTime()-phaseStart >= 120.0/MIN(90,(int)window.screen.maximumFramesPerSecond)*.97,"90 FPS average cap respected");
         fprintf(stdout,"PASS %s: %d callbacks in %.2f s; caps 120/60/90, resize, hide/restore, late frame, pixels\n",mode?"HDR":"SDR",callbacks,CACurrentMediaTime()-start);
         require(callbacks>1500,"callbacks actually arrived");
-        mc_display_link_close(link);
+        closeLink(link);
+        transitionCheck(ctx,enc,layer,src);
         [readback release]; [src release]; [hdr release];
     }
     [window close]; [window release];

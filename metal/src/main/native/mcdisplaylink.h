@@ -2,7 +2,9 @@
 #import <QuartzCore/CAMetalLayer.h>
 #import <Metal/Metal.h>
 void *mc_display_link_create(CAMetalLayer *layer, int latency, int log);
-void mc_display_link_close(void *handle);
+// Returns 0 while encoded frames are still in flight; retain the handle and retry.
+// Returns 1 after invalidating/releasing it (also for NULL). Never blocks on the GPU.
+int mc_display_link_close(void *handle);
 void mc_display_link_pause(void *handle);
 int mc_display_link_begin(void *handle, int cap);
 id<CAMetalDrawable> mc_display_link_drawable(void *handle); // borrowed until take/pause
