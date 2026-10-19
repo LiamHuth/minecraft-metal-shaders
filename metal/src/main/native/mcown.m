@@ -1165,8 +1165,13 @@ void mco_frag_a1_exact(Own *w, int mode, int lists, int listCap, int set) {
 // (mco_frag_cull) a1Exact / a2Exact's buffers for the cull's reset / cull / finish kernels (terrain.metal A1Bind; an empty mask: off).
 // Every list with a table gets a region of A1_REGION blocks (2^A1_SH quads each); a list past it draws its class draw (frag_finish).
 int mco_a1_sh = 2;
-static void ownA1Bind(Own *w, id<MTLComputeCommandEncoder> c) {
+static void ownA1Bind(Own *w, id<MTLComputeCommandEncoder> c, id<MTLBuffer> unused) {
 	uint32_t k[4] = {0, 0, 0, A1_REGION};
+	// Metal requires bindings even when A1Bind.mode/masks prevent all access.
+	// Reuse an existing buffer for disabled arguments; enabled paths replace these below.
+	[c setBuffer:unused offset:0 atIndex:22];
+	[c setBuffer:unused offset:0 atIndex:24];
+	[c setBuffer:unused offset:0 atIndex:26];
 	uint32_t lo = w->a1MaskSet ? w->a1MaskLo : (w->a1Lists >= 32 ? 0xFFFFFFFFu : (1u << w->a1Lists) - 1);
 	uint32_t hi = w->a1MaskSet ? w->a1MaskHi : (w->a1Lists >= 64 ? 0xFFFFFFFFu : w->a1Lists > 32 ? (1u << (w->a1Lists - 32)) - 1 : 0);
 	if (w->a1Mode && (lo | hi) && w->a1ListCap > 0 && !w->exactAllocFailed) {
@@ -1342,7 +1347,7 @@ void mco_frag_cull(Own *w, Enc *enc, const void *frame, int frameLength, const v
 			[c setBuffer:w->uoccBArgs offset:0 atIndex:15];
 		}
 		ownBindSolid(w, c);
-		ownA1Bind(w, c);
+		ownA1Bind(w, c, args);
 		[c setBuffer:w->tieRing ? w->tieRing : sections offset:0 atIndex:30];  // (read only under FragFrame's F_TIE_CLOSE, which needs the ring)
 		[c setComputePipelineState:w->fragReset];
 		NSUInteger resetThreads = (NSUInteger) MAX(listCount, 32);  // (the stats, occlusion counters, unit test, facing tally, culling funnel)
