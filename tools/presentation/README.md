@@ -100,3 +100,31 @@ The recorder adds GPU-wait begin/end/status markers. A GPU wait lasting a second
 The windowed regression now makes a real GPU frame depend on work scheduled in the private display-link mode. It checks an active link, a retiring link and close polling alone. A background watchdog releases the synthetic GPU gate if the test regresses. The previous build fails this test; the candidate passes in SDR and HDR, along with the existing presentation/pixel/resize and 24 delayed-GPU transition checks. Native fullscreen has not been rerun for this candidate; that specific system-freeze correction remains unconfirmed.
 
 An isolated Minecraft/Fabric world also passed three windowed HDR on/off cycles and shutdown with ProMotion active, with Metal API validation enabled. This check changes the live preference directly, so menus cannot suppress a synthetic hotkey. An earlier hotkey check stopped at an open pause menu; an unfocused handoff attempt lost display callbacks and fell back without freezing. The successful run explicitly raised the temporary window and verified focus before testing. These results establish windowed behavior, not fullscreen stability or a latency improvement.
+
+## Windowed cadence comparison (October 20)
+
+`pacing-bench.py` measures both presentation paths in the same disposable offline Fabric world. It leaves the renderer unchanged and adds a test-only timestamp immediately after SDL input polling. `GpuTimes` supplies GPU and Metal presentation timestamps for both paths. The benchmark does not change the user's Prism profile, launch fullscreen, or enable Metal API validation.
+
+Leave its window focused until it exits (about three minutes). Minecraft's AFK throttle is disabled only in the temporary profile; every measured frame records the actual FPS cap, pacing state, focus and fullscreen flags. The test runs 50 FPS in Off/On/On/Off order, followed by 60 On/Off and 120 Off/On. Each phase excludes four seconds of settling and measures fifteen seconds. Transition diagnostics remain enabled, so this does not measure toggle latency.
+
+```sh
+python3 tools/presentation/pacing-bench.py /absolute/path/to/mod.jar \
+  --java-home /absolute/path/to/jdk25 --output /tmp/mcopt-pacing-comparison
+python3 tools/presentation/pacing-analyze.py /tmp/mcopt-pacing-comparison/measurements.json
+```
+
+The output directory must be new. `--prepare-only` compiles the helper without launching. The runner records the JAR checksum and launch arguments; the analyzer reports timestamp coverage and rejects invalid comparisons. Presentation intervals use unique Metal `presentedTime` values within each measured phase, not GPU completion or callback-delivery times. Poll-to-presentation measures the software pipeline, not physical input-to-photon latency. A focused window and `Active` status do not prove a particular physical panel refresh rate.
+
+Observed on the M4 Pro's built-in 120 Hz display, macOS 27.0.1, full-scene HDR at 1280×800, VSync on, with `promotion.5-diagnostic` (`e318ee7`):
+
+| Cap | Off: interval p95 | On: interval p95 | Off: median poll-to-presentation | On: median poll-to-presentation |
+| --- | ---: | ---: | ---: | ---: |
+| 50 FPS, repeated | 25.00 ms | 33.33 ms | 29.32–29.80 ms | 49.79–49.83 ms |
+| 60 FPS | 16.67 ms | 16.67 ms | 30.19 ms | 49.79 ms |
+| 120 FPS | 8.33 ms | 8.33 ms | 30.24 ms | 41.52 ms |
+
+All eight measured phases retained focus, the requested cap and the expected pacing state. No measured presentation timestamps were missing or duplicated; no GPU recorder slots were dropped. Clock-calibration offset changed by 42 ns. An earlier preparation had a test-only mixin packaging error; subsequent preliminary runs were discarded for AFK throttling and focus loss.
+
+At 50 FPS, On averaged almost exactly 50 frames per second but alternated 16.67 and 33.33 ms intervals (about 80%/20%). Off predominantly used 16.67 and 25 ms. This is consistent with On selecting frames from a 60 Hz schedule while Off uses finer presentation opportunities. It does not directly measure the callback frequency or panel refresh rate. Apple's rate request is a preference; the OS can round it. The current deadline grid preserves an average cap without guaranteeing evenly spaced frames.
+
+At 60 and 120 FPS, On eliminated the occasional short/long intervals seen with Off in this sample, but increased the software latency estimate by about 20 and 11 ms respectively. These measurements do not demonstrate an overall user improvement. Investigate rate rounding and the additional presentation delay before recommending the feature. This is a light, static scene with short samples, not a GPU-saturation, external-display, fullscreen or physical-latency benchmark.
