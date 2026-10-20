@@ -35,6 +35,11 @@ result = {}
 for name, phase in data["phases"].items():
     begin, end = phase["nanoRange"]
     expected = "ACTIVE" if phase["enabled"] else "OFF"
+    fullscreen = phase.get("expectedFullscreen", False)
+    context = phase.get("windowContext", {})
+    native_valid = not fullscreen or (context.get("nativeFullscreen") is True
+        and context.get("focused") is True and context.get("vsync") is True and context.get("hdr") is True
+        and context.get("drawableWidth") == phase["width"] and context.get("drawableHeight") == phase["height"])
     indices = [i for i, yes in enumerate(gpu["presenting"])
                if yes and begin <= gpu["pollNs"][i] < end]
     shown = [gpu["presentedTimeNs"][i] for i in indices if begin <= gpu["presentedTimeNs"][i] < end]
@@ -51,8 +56,11 @@ for name, phase in data["phases"].items():
         "variableGpuLoad": phase.get("variableGpuLoad", False),
         "presentationPolicy": phase.get("presentationPolicy", "clock"),
         "queueLimit": phase.get("queueLimit", 0),
-        "validContext": phase["fullscreenFrames"] == 0 and phase["unfocusedFrames"] == 0
+        "expectedFullscreen": fullscreen, "windowContext": context,
+        "validContext": phase["fullscreenFrames"] == (phase["frames"] if fullscreen else 0) and phase["unfocusedFrames"] == 0
             and phase["states"] == {expected: phase["frames"]} and phase["hdr"]
+            and phase.get("vsync", True) and phase.get("changedSizeFrames", 0) == 0
+            and phase.get("movedCameraFrames", 0) == 0 and native_valid
             and phase.get("actualCaps") == {str(phase["cap"]): phase["frames"]},
         "states": phase["states"], "unfocusedFrames": phase["unfocusedFrames"],
         "presentingSubmits": len(indices),

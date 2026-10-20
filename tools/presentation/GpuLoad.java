@@ -20,10 +20,13 @@ public final class GpuLoad {
                 field.setAccessible(true);
                 frameCommand = ((SymbolLookup)field.get(null)).find("mc_frame_cmd").orElseThrow().address();
             }
-            // Alternate sustained loads, with a short burst every eleven frames.
+            // Fullscreen comparisons use the same wall-clock workload across different FPS.
+            // Older suites retain their frame-based pattern for reproducibility.
             int n = PacingBench.loadFrame++;
-            int rounds = new int[]{8000, 12000, 18000, 24000}[(n / 24) % 4];
-            if (n % 11 == 0) rounds = 32000;
+            int step = PacingBench.fullscreenSuite
+                ? (int)((System.nanoTime() - PacingBench.loadStartedNs) / 250_000_000L) : n / 24;
+            int rounds = new int[]{8000, 12000, 18000, 24000}[step % 4];
+            if ((PacingBench.fullscreenSuite ? step : n) % 11 == 0) rounds = 32000;
             load.invokeExact(encoder, frameCommand, rounds);
         } catch (Throwable t) { throw new RuntimeException("Pacing benchmark GPU load failed", t); }
     }

@@ -298,3 +298,38 @@ Fullscreen exposed finer presentation intervals: duration at the 83 FPS cap deli
 Fullscreen ordinary presentation is the most promising observation: much lower software presentation delay, without the duration policy's additional queue latency. Within fullscreen, duration improved spacing and throughput under the synthetic load but increased median render-to-presentation delay from 8.15 to 26.15 ms. The adaptive policy with queue three lowered that delay to 16.39 ms but delivered only 104.12 FPS. It still did not improve all goals relative to ready presentation.
 
 Next: validate ordinary fullscreen presentation in Minecraft against the unchanged legacy path, using the same scene/cap/workload and recording actual presentations. Keep the new duration/queue policies experimental. The successful startup-only probe does not justify calling live fullscreen switching fixed, or changing the default based on these synthetic measurements.
+
+### Minecraft fullscreen comparison, October 20
+
+Four separate Minecraft processes completed in legacy / ready / ready / legacy order, using the unchanged `promotion.9-diagnostic` jar (SHA-256 `610b42d2bc0a049c598afaa19d434751d11a18d47253c7234dc889bdc9a6ab2e`). Legacy keeps ProMotion off; ready enables ordinary presentation with the pre-input cap and drawable acquisition, with queue control disabled. Each process fixes its policy at startup. No live fullscreen, HDR or pacing-mode toggles were performed.
+
+All runs used native fullscreen on the built-in Retina display, full-scene HDR, VSync, three drawables and an actual 1434×900 render target. Each disposable flat world used seed 1234, the same stationary camera, frozen daylight/weather and disabled mob spawning. Each case settled for three seconds and measured for ten. The loaded case changes synthetic GPU work every 250 ms, independently of achieved FPS. The test verified focus, camera, dimensions, FPS cap and pacing state during measurement, plus native fullscreen/layer context at each phase's start. All processes closed normally with no freezes or dropped recorder entries.
+
+| Case / policy | Displayed FPS | Interval p95 | Median poll-to-presentation | Poll-to-presentation p95 |
+| --- | ---: | ---: | ---: | ---: |
+| 50, legacy | 49.50–49.92 | 25.00 ms | 13.80–15.25 ms | 18.45–28.64 ms |
+| 50, ready | 48.66–48.68 | 29.17 ms | 12.83–12.99 ms | 19.00–19.18 ms |
+| 60, legacy | 59.85–59.88 | 20.83 ms | 13.55–14.20 ms | 16.71–17.90 ms |
+| 60, ready | 58.67–58.70 | 25.00 ms | 12.32–13.12 ms | 19.78–20.30 ms |
+| 120 light, legacy | 119.40 | 8.33 ms | 14.62–15.08 ms | 18.86–18.96 ms |
+| 120 light, ready | 115.29–115.30 | 8.33 ms | 14.29–14.31 ms | 16.44–16.48 ms |
+| 120 loaded, legacy, complete repeat | 105.31 | 16.67 ms | 25.10 ms | 38.97 ms |
+| 120 loaded, ready | 103.59–103.65 | 16.67 ms | 20.54–20.91 ms | 43.32–44.42 ms |
+
+Ranges represent the two processes, not confidence intervals. The first loaded legacy phase lacked one presentation timestamp/callback out of 1052 submits, so it is excluded from the validated comparison above (observed-only: 105.21 FPS, median delay 25.59 ms). The other 15 phases had complete unique timestamps and valid timing/context. The final legacy repeat provides a fully covered loaded baseline. Raw measurements, manifests, logs and summaries are saved locally under `work/promotion/pacing-ab/fullscreen10`, beside this checkout's parent directory.
+
+The existing Minecraft path already benefits from fullscreen. Ready reduces median software delay under load by about 4–4.6 ms, but loses roughly 1.7 FPS and worsens the delay tail. At light 120 FPS it loses about four FPS, while presentation-interval standard deviation increases from 0.59 to 1.65 ms. The low-cap runs also undershoot their targets and have longer p95 intervals. This is not a consistent upgrade across throughput, consistency and delay. The first legacy 50 FPS phase was noisier than its repeat, illustrating the limits of these short samples.
+
+Input-poll intervals help localize the cap loss: at light 120 FPS they average 8.67–8.68 ms with ready versus 8.37–8.38 ms with legacy, against an 8.33 ms target. At 50 FPS ready averages 20.55–20.56 ms versus 20.04 ms in the repeated legacy run. Ready replaces the existing precise limiter with a run-loop wait, then anchors the next deadline after drawable acquisition. Late wakes/acquisition therefore extend subsequent deadlines. This is a plausible explanation for the persistent undershoot; the measurements do not isolate the individual wait/acquisition costs. Next, isolate that limiter while preserving acquisition before input polling, and repeat the same comparison before changing defaults.
+
+Poll-to-presentation is a software timing estimate, not physical input-to-photon latency. These static scenes and synthetic GPU workloads do not establish tear-free scanout, physical VRR, sustained gameplay performance, external-display behavior or safe live fullscreen transitions.
+
+To prepare a single fixed-policy session without launching it:
+
+```sh
+python3 tools/presentation/pacing-bench.py /absolute/path/to/mod.jar \
+  --java-home "$JAVA_HOME" --suite fullscreen --policy legacy \
+  --output /tmp/mcopt-fullscreen-legacy --prepare-only
+```
+
+Use `--policy ready` for the candidate and a separate output directory for each process. Omit `--prepare-only` to launch after arranging focus. Run legacy / ready / ready / legacy, then analyze each output with `pacing-analyze.py`. The context helper only reads AppKit/layer state; the test world and profiles remain disposable.
