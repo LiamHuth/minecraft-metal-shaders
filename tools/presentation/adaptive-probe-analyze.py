@@ -36,7 +36,7 @@ for phase in data["phases"]:
         "missingCallbacks": missing_callbacks, "duplicatePresentationTimes": duplicate,
         "invalidTiming": invalid_timing,
         "unfocused": sum(not r[6] for r in rows), "intervalMs": stats(intervals),
-        "inputToPresentedMs": stats(latency), "gpuMs": stats(gpu),
+        "renderStartToPresentedMs": stats(latency), "gpuMs": stats(gpu),
         "intervalBinsMs": dict(sorted(collections.Counter(round(x*2)/2 for x in intervals).items()))}
     result["valid"] = bool(len(intervals) > 20 and not missing and not missing_callbacks
                            and not duplicate and not invalid_timing and not result["unfocused"])
@@ -44,6 +44,7 @@ for phase in data["phases"]:
     out.append(result)
     print(json.dumps(result))
 args.report.with_suffix(".summary.json").write_text(json.dumps({
+    "timingMeaning": "After pre-frame wait/drawable acquisition to Metal presentedTime; no input sampling or physical scanout measurement.",
     "context": {k:v for k,v in data.items() if k not in {"samples", "phases"}}, "phases": out}, indent=2)+"\n")
 if not all(p["valid"] for p in out):
     raise SystemExit("Incomplete presentation coverage or focus: do not claim a fully valid comparison.")

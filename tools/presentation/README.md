@@ -274,3 +274,27 @@ clang -fno-objc-arc -O2 -Wall -mmacosx-version-min=15.0 \
 /tmp/mcopt-adaptive-probe fullscreen /tmp/probe-fullscreen.json
 python3 tools/presentation/adaptive-probe-analyze.py /tmp/probe-fullscreen.json
 ```
+
+
+### Native fullscreen comparison, October 20
+
+The prepared probe completed windowed and native fullscreen runs on the **built-in Retina display**, with HDR and VSync enabled and a fixed 1280×800 render target. Fullscreen scaling did not increase render resolution. Both windows closed normally; all 24 measured phases retained focus and had complete, unique presentation timestamps, valid GPU timing and no reported GPU errors. The test entered fullscreen before creating the renderer. This does **not** validate live Minecraft fullscreen/HDR toggling or external displays.
+
+Each configuration used one second settling and four seconds measurement. This was a single, fixed-order sweep, with windowed first and fullscreen second; short-run variation and order effects remain. The ordinary-presentation control was `ready`, which still uses the new pre-frame cap/acquisition path, not Minecraft's legacy Off path. The synthetic renderer does not poll input: its delay metric starts immediately after the pre-frame wait and drawable acquisition, ending at Metal's reported presentation time. It is not physical input latency.
+
+| Case / policy | Windowed → fullscreen FPS | Interval p95 | Median render-start-to-presentation |
+| --- | ---: | ---: | ---: |
+| 50 cap, ready | 48.76 → 48.71 | 25.00 → 25.00 ms | 21.09 → 5.96 ms |
+| 50 cap, duration | 39.32 → 48.00 | 33.33 → 20.83 ms | 65.66 → 41.23 ms |
+| 83 cap, ready | 79.92 → 80.08 | 16.67 → 16.67 ms | 20.75 → 6.29 ms |
+| 83 cap, duration | 59.87 → 80.00 | 16.67 → 12.50 ms | 49.05 → 24.65 ms |
+| 120 cap, varying GPU load, ready | 106.55 → 109.18 | 16.67 → 16.67 ms | 24.94 → 8.15 ms |
+| 120 cap, varying GPU load, duration | 109.90 → 114.47 | 16.67 → 8.34 ms | 32.42 → 26.15 ms |
+| 120 cap, varying GPU load, duration + queue three | 108.88 → 113.58 | 16.67 → 12.50 ms | 23.74 → 23.42 ms |
+| 120 cap, varying GPU load, adaptive + queue three | 108.13 → 104.12 | 16.67 → 12.50 ms | 23.76 → 16.39 ms |
+
+Fullscreen exposed finer presentation intervals: duration at the 83 FPS cap delivered 12.50 ms intervals (80 FPS), whereas windowed presentation predominantly used 16.67 ms (60 FPS). At the 50 FPS cap fullscreen predominantly used 20.83 ms (48 FPS), versus windowed 25 ms (40 FPS). This is consistent with the screen's reported 4.167 ms update granularity and a different fullscreen scheduling path; callback intervals remained 8.333 ms. Metal timestamps do not establish instantaneous physical panel refresh or prove tear-free output.
+
+Fullscreen ordinary presentation is the most promising observation: much lower software presentation delay, without the duration policy's additional queue latency. Within fullscreen, duration improved spacing and throughput under the synthetic load but increased median render-to-presentation delay from 8.15 to 26.15 ms. The adaptive policy with queue three lowered that delay to 16.39 ms but delivered only 104.12 FPS. It still did not improve all goals relative to ready presentation.
+
+Next: validate ordinary fullscreen presentation in Minecraft against the unchanged legacy path, using the same scene/cap/workload and recording actual presentations. Keep the new duration/queue policies experimental. The successful startup-only probe does not justify calling live fullscreen switching fixed, or changing the default based on these synthetic measurements.
