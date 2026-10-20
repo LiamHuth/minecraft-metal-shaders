@@ -333,3 +333,52 @@ python3 tools/presentation/pacing-bench.py /absolute/path/to/mod.jar \
 ```
 
 Use `--policy ready` for the candidate and a separate output directory for each process. Omit `--prepare-only` to launch after arranging focus. Run legacy / ready / ready / legacy, then analyze each output with `pacing-analyze.py`. The context helper only reads AppKit/layer state; the test world and profiles remain disposable.
+
+### Precise pre-input timer experiment (`promotion.10-diagnostic`)
+
+`-Dmcopt.metal.displayLink.presentation=precise` retains ready's ordinary presentation, acquisition before input and relative frame deadline, but waits on the existing renderer's precise kernel timer. Each sleep is limited to one millisecond, with the private display run loop serviced between sleeps so pending display/GPU work can progress. There is no busy-spin or new presentation delay. The older policies and opt-in defaults are unchanged; queue control remains independently configurable and is disabled in this comparison.
+
+The stationary comparison remains legacy / candidate / candidate / legacy, at 50, 60 and 120 FPS plus time-based varying GPU work under the 120 FPS cap. The analyzer now also reports input-poll intervals and GPU-completion-to-presentation delay. This separates cap accuracy from the end-to-end software delay; it does not measure physical input latency.
+
+The fullscreen harness accepts `--policy precise`, `--vsync on|off` and `--motion none|append|only`. Motion builds a striped wall in the disposable world, then pans +/-30 degrees with a four-second cycle under varying GPU load. The current visual check uses constant angular speed, reverses only at the ends, and changes GPU work every 237 ms to avoid aligning every center crossing with a workload transition. An on-screen label identifies the mode. The stationary load still changes every 250 ms. Camera motion timestamps and the motion profile are recorded separately from stationary measurements.
+
+`--vsync off` is a legacy-only control that explicitly sets `-Dmcopt.metal.paceSync=false`; the shader renderer otherwise enables native layer synchronization even when Minecraft's VSync option is off. This override belongs only to the test control. Existing legacy frame selection remains active. All display preferences stay fixed from startup; the harness verifies the requested native VSync state as well as HDR and fullscreen. The visual phase requires human observation: the software cannot determine whether a frame tore on the physical panel.
+
+`run-prepared.py` runs a prepared matrix's native validation first, then its Minecraft sessions in the recorded order. `--reuse-validation /path/to/earlier/comparison` reuses a successful native validation only when the recorded jar SHA-256 matches. It stops on game failure, lost focus or an invalid context; missing presentation timestamps remain explicitly flagged for analysis. Existing logs are never overwritten. Its process timeout terminates only its own test child and cannot guarantee recovery from a system-wide GPU or WindowServer failure.
+
+### Precise timer measurements and first visual check, October 20
+
+Local results are in `work/promotion/pacing-ab/fullscreen11`. The jar SHA-256 is `54ed06750f51c82c374ba63d7bd66c4f9ffd0f90a7091781c69d9fdd59ff08a0`. Native SDR/HDR validation, including delayed GPU completion and teardown, passed. Four separate Minecraft processes completed in legacy / precise / precise / legacy order, each with the same fullscreen HDR, built-in display, 1434×900 target, three drawables, seed and stationary protocol used above. No live display settings changed. Each process ended with a visual striped-wall pan.
+
+| Stationary case / policy | Displayed FPS | Interval p95 | Median poll-to-presentation | Poll-to-presentation p95 |
+| --- | ---: | ---: | ---: | ---: |
+| 50, legacy | 49.95–50.00 | 25.00–29.17 ms | 12.47–13.66 ms | 18.45–26.26 ms |
+| 50, precise | 49.85–49.95 | 29.17 ms | 12.05–12.20 ms | 18.63–19.52 ms |
+| 60, legacy | 59.82–59.85 | 20.83–25.00 ms | 13.66–14.38 ms | 17.57–17.70 ms |
+| 60, precise | 59.65–59.85 | 25.00 ms | 14.53–23.09 ms | 30.69–35.33 ms |
+| 120 light, legacy | 119.40–119.50 | 8.33 ms | 14.88–16.53 ms | 18.88–28.13 ms |
+| 120 light, precise | 91.78–116.69 | 8.33–16.67 ms | 15.42–31.68 ms | 31.17–39.17 ms |
+| 120 loaded, legacy, complete first run | 105.43 | 16.67 ms | 25.19 ms | 39.24 ms |
+| 120 loaded, precise | 87.94–105.07 | 16.67 ms | 23.64–32.09 ms | 40.80–41.48 ms |
+
+Ranges are individual runs, not confidence intervals. All four processes retained focus and valid test context, with no recorder drops. Eighteen of twenty measured phases had complete presentation coverage. The final legacy loaded phase lacked 43/1008 presentation timestamps, and its visual phase lacked 5/1035; neither is a fully valid timing comparison. All processes closed without a freeze. The intended fifth, VSync-off process stopped at its native settings assertion before measurement because the layer still had synchronization enabled. This was a rejected control, not a GPU crash.
+
+The precise timer largely removes the earlier low-cap undershoot, but does not consistently improve frame spacing, throughput or software latency. The two 120 FPS candidate runs vary considerably, and neither provides a repeatable overall upgrade. Keep this policy experimental. The existing legacy shader path also uses its presentation/acquisition worker, whereas the display-link path presents on the frame command buffer; these results compare whole paths and cannot attribute every difference to the timer alone.
+
+The observer did not notice obvious tearing but could not confidently tell. They reported a stutter when the camera faced the wall straight on in all modes. The first visual check used sinusoidal yaw, whose speed peaked at those crossings, and its 250 ms GPU-load changes aligned with the crossings. That confounds diagnosis of the perceived stutter. The follow-up under `visual12` uses constant-speed yaw, offset load cadence and the explicit native VSync-off override described above. Neither timing logs nor an inconclusive visual observation establish tear-free scanout or physical input latency.
+
+### Corrected visual comparison, October 20
+
+All three startup-fixed fullscreen HDR sessions in `work/promotion/pacing-ab/visual12` completed with valid focus/settings and complete unique presentation timestamps. The unchanged jar reused the successful native validation from `fullscreen11`. Each visual phase measured ten seconds after three seconds settling. Actual native synchronization was verified on for legacy and precise, and off for the final legacy control. These are single, fixed-order visual checks with synthetic variable load, not sustained gameplay benchmarks.
+
+| Visual pan | Reported presentation events/s | Interval p95 | Median poll-to-presentation | Poll-to-presentation p95 |
+| --- | ---: | ---: | ---: | ---: |
+| Existing renderer, sync on | 105.82 | 16.67 ms | 24.84 ms | 37.74 ms |
+| Precise timer, sync on | 105.95 | 16.67 ms | 24.20 ms | 40.42 ms |
+| Existing renderer, native sync off | 97.28 | 16.41 ms | 9.87 ms | 36.79 ms |
+
+The observer reported that the first two looked the same, neither showed visible tearing, the third showed tearing, and the previous center-crossing stutter was gone. This provides a useful positive control for the visual test: native unsynchronized presentation caused observable tearing in the tested conditions. It supports retaining synchronization, but does not show that the display-link candidate improves on the already synchronized legacy path or guarantee tear-free output under every condition. The disappearance of the center stutter points to the original test motion/workload as a confound; it does not isolate which change removed it.
+
+The synchronized paths have effectively identical throughput and interval variability in this short check (standard deviation 2.94 versus 2.96 ms). The candidate's median software delay is only 0.63 ms lower and its p95 is 2.68 ms higher. Together with the inconsistent stationary results, this is insufficient evidence to recommend the candidate. The unsynchronized run's lower reported median delay comes with visible tearing, lower presentation throughput and a long delay tail; it is not a solution to all three goals. Presentation events with tearing do not correspond to complete tear-free displayed images, and the delay metric is not physical input latency.
+
+The analyzer retains signed GPU-completion-to-presentation deltas and counts cases where presentation precedes the associated command buffer's reported completion. Many samples, especially in the unsynchronized control, have that ordering. This diagnostic must not be treated as a verified display-queue wait; timestamp semantics/association need further investigation before using it to localize latency. No physical input-latency improvement is claimed. Raw measurements, manifests, logs, source patches, summaries and the observer's feedback are retained locally.

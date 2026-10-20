@@ -146,7 +146,8 @@ int main(int argc, const char **argv) { @autoreleasepool {
     [window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; events();
     for (int mode = 0; mode < 2; mode++) {
         ValidationCadence *cadence = [ValidationCadence new];
-        BOOL presentationLimited = getenv("MCOPT_PRESENT_POLICY") && atoi(getenv("MCOPT_PRESENT_POLICY")) >= 2;
+        int policy = getenv("MCOPT_PRESENT_POLICY") ? atoi(getenv("MCOPT_PRESENT_POLICY")) : 0;
+        BOOL presentationLimited = policy == 2 || policy == 3;
         mc_xdr_enable(mode);
         mc_layer_configure(ctx,layer,480,300,1);
         layer.framebufferOnly = NO; // read back the actual presented drawable to verify colour

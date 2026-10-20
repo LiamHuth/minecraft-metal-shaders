@@ -3,7 +3,7 @@
 #include <math.h>
 #include <stdint.h>
 
-enum { MC_PRESENT_CLOCK, MC_PRESENT_READY, MC_PRESENT_DURATION, MC_PRESENT_ADAPTIVE };
+enum { MC_PRESENT_CLOCK, MC_PRESENT_READY, MC_PRESENT_DURATION, MC_PRESENT_ADAPTIVE, MC_PRESENT_PRECISE };
 #define MC_PRESENT_RECEIPTS 64
 typedef struct {
     uint64_t sequence;
@@ -53,7 +53,7 @@ static inline MCPresentBacklog mc_present_backlog(const MCPresentFeedback *p) {
 }
 static inline double mc_present_duration(int mode, int cap, double gpuAverage,
                                           double maximumInterval, int adaptiveEligible) {
-    if (mode < MC_PRESENT_DURATION || cap <= 0) return 0;
+    if ((mode != MC_PRESENT_DURATION && mode != MC_PRESENT_ADAPTIVE) || cap <= 0) return 0;
     double duration = 1.0 / cap;
     // GPU duration excludes time spent queued for presentation. Do not feed
     // compositor delay back into the render budget and progressively slow down.

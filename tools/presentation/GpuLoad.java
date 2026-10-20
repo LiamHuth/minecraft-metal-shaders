@@ -24,7 +24,7 @@ public final class GpuLoad {
             // Older suites retain their frame-based pattern for reproducibility.
             int n = PacingBench.loadFrame++;
             int step = PacingBench.fullscreenSuite
-                ? (int)((System.nanoTime() - PacingBench.loadStartedNs) / 250_000_000L) : n / 24;
+                ? (int)((System.nanoTime() - PacingBench.loadStartedNs) / (PacingBench.motionActive ? 237_000_000L : 250_000_000L)) : n / 24;
             int rounds = new int[]{8000, 12000, 18000, 24000}[step % 4];
             if ((PacingBench.fullscreenSuite ? step : n) % 11 == 0) rounds = 32000;
             load.invokeExact(encoder, frameCommand, rounds);

@@ -36,9 +36,10 @@ for name, phase in data["phases"].items():
     begin, end = phase["nanoRange"]
     expected = "ACTIVE" if phase["enabled"] else "OFF"
     fullscreen = phase.get("expectedFullscreen", False)
+    vsync = phase.get("expectedVsync", True)
     context = phase.get("windowContext", {})
     native_valid = not fullscreen or (context.get("nativeFullscreen") is True
-        and context.get("focused") is True and context.get("vsync") is True and context.get("hdr") is True
+        and context.get("focused") is True and context.get("vsync") is vsync and context.get("hdr") is True
         and context.get("drawableWidth") == phase["width"] and context.get("drawableHeight") == phase["height"])
     indices = [i for i, yes in enumerate(gpu["presenting"])
                if yes and begin <= gpu["pollNs"][i] < end]
@@ -50,6 +51,13 @@ for name, phase in data["phases"].items():
                if begin <= gpu["presentedTimeNs"][i] < end and gpu["pollNs"][i] <= gpu["presentedTimeNs"][i]]
     durations = [(gpu["gpuEndNs"][i] - gpu["gpuStartNs"][i]) / 1e6 for i in indices
                  if 0 < gpu["gpuStartNs"][i] <= gpu["gpuEndNs"][i]]
+    polls = sorted(set(gpu["pollNs"][i] for i in indices))
+    poll_intervals = [(b - a) / 1e6 for a, b in zip(polls, polls[1:])]
+    # Keep signed deltas. Some paths report presentation before the associated
+    # command buffer's GPU completion; dropping those would bias this diagnostic
+    # toward a positive "display wait" that the data does not establish.
+    gpu_to_shown = [(gpu["presentedTimeNs"][i] - gpu["gpuEndNs"][i]) / 1e6 for i in indices
+                    if begin <= gpu["presentedTimeNs"][i] < end and gpu["gpuEndNs"][i] > 0]
     target = 1000 / phase["cap"]
     row = result[name] = {
         "cap": phase["cap"], "enabled": phase["enabled"],
@@ -57,9 +65,10 @@ for name, phase in data["phases"].items():
         "presentationPolicy": phase.get("presentationPolicy", "clock"),
         "queueLimit": phase.get("queueLimit", 0),
         "expectedFullscreen": fullscreen, "windowContext": context,
+        "expectedVsync": vsync, "visualMotion": phase.get("visualMotion", False),
         "validContext": phase["fullscreenFrames"] == (phase["frames"] if fullscreen else 0) and phase["unfocusedFrames"] == 0
             and phase["states"] == {expected: phase["frames"]} and phase["hdr"]
-            and phase.get("vsync", True) and phase.get("changedSizeFrames", 0) == 0
+            and phase.get("vsync", True) == vsync and phase.get("changedSizeFrames", 0) == 0
             and phase.get("movedCameraFrames", 0) == 0 and native_valid
             and phase.get("actualCaps") == {str(phase["cap"]): phase["frames"]},
         "states": phase["states"], "unfocusedFrames": phase["unfocusedFrames"],
@@ -74,6 +83,8 @@ for name, phase in data["phases"].items():
         "duplicatePresentationTimestamps": duplicate_times,
         "intervalMs": summary(intervals), "pollToPresentationMs": summary(latency),
         "gpuMs": summary(durations),
+        "pollIntervalMs": summary(poll_intervals), "gpuEndToPresentationMs": summary(gpu_to_shown),
+        "presentationBeforeGpuCompletion": sum(delta < 0 for delta in gpu_to_shown),
         "intervalHistogramMs": dict(sorted(collections.Counter(round(x * 2) / 2 for x in intervals).items())),
         "meanAbsoluteIntervalErrorMs": statistics.mean(abs(x - target) for x in intervals) if intervals else None,
         "longIntervalsOver1_5Periods": sum(x > 1.5 * target for x in intervals),

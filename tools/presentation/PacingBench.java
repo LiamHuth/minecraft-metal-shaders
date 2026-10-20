@@ -8,6 +8,7 @@ import mcopt.metal.shade.dims.ShadeXdr;
 import net.fabricmc.api.ClientModInitializer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.InactivityFpsLimit;
+import net.minecraft.network.chat.Component;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.level.GameType;
@@ -40,6 +41,10 @@ public class PacingBench implements ClientModInitializer {
     static final boolean presentationSuite = "presentation".equals(System.getProperty("mcopt.bench.suite"));
     static final boolean fullscreenSuite = "fullscreen".equals(System.getProperty("mcopt.bench.suite"));
     static final String fixedPolicy = System.getProperty("mcopt.bench.policy", "legacy");
+    static final boolean expectedVsync = Boolean.parseBoolean(System.getProperty("mcopt.bench.vsync", "true"));
+    static final String motion = System.getProperty("mcopt.bench.motion", "none");
+    static boolean motionActive;
+    static long motionStartedNs, nextLabelNs;
 
     static void check(boolean ok, String why) { if (!ok) throw new AssertionError(why); }
     static void game(Runnable work) throws Exception { mc.submit(work).get(guarded ? 5 : 30, TimeUnit.SECONDS); }
@@ -48,6 +53,21 @@ public class PacingBench implements ClientModInitializer {
     /** Called immediately after SDL input polling on the render thread, equally in both modes. */
     public static void polled() {
         Latency.lastPollNs = System.nanoTime();
+        if (motionActive) {
+            double seconds = (Latency.lastPollNs - motionStartedNs) / 1e9;
+            double cycle = seconds % 4;
+            float yaw = (float)(cycle < 2 ? -30 + 30 * cycle : 90 - 30 * cycle);
+            mc.player.setYRot(yaw);
+            mc.player.yRotO = yaw;
+            mc.player.setXRot(0);
+            mc.player.xRotO = 0;
+            if (Latency.lastPollNs >= nextLabelNs) {
+                String label = fixedPolicy.equals("legacy") ? "Existing renderer" : "Revised timer";
+                mc.gui.hud.setOverlayMessage(Component.literal("Tearing check: " + label
+                    + " | VSync " + (expectedVsync ? "ON" : "OFF") + " | watch vertical edges for splits"), false);
+                nextLabelNs = Latency.lastPollNs + 1_000_000_000L;
+            }
+        }
         if (current == null) return;
         frames++;
         states.merge(DisplayLink.status().name(), 1, Integer::sum);
@@ -57,7 +77,7 @@ public class PacingBench implements ClientModInitializer {
         if ((flags & SDLVideo.SDL_WINDOW_FULLSCREEN) != 0) fullscreen++;
         if (mc.getWindow().getWidth() != (int)current.get("width") || mc.getWindow().getHeight() != (int)current.get("height")) changedSize++;
         if (fullscreenSuite && (Math.abs(mc.player.getX() - .5) > .1 || Math.abs(mc.player.getZ() - .5) > .1
-                || Math.abs(mc.player.getXRot() - 15) > 1 || Math.abs(mc.player.getYRot()) > 1)) movedCamera++;
+                || (!motionActive && (Math.abs(mc.player.getXRot() - 15) > 1 || Math.abs(mc.player.getYRot()) > 1)))) movedCamera++;
     }
 
     static void phase(int index, int cap, boolean enabled, boolean load) throws Exception {
@@ -92,8 +112,14 @@ public class PacingBench implements ClientModInitializer {
             current.put("height", mc.getWindow().getHeight());
             current.put("hdr", ShadeXdr.active() && ShadeXdr.fullScene());
             current.put("vsync", mc.options.enableVsync().get());
+            current.put("expectedVsync", expectedVsync);
+            current.put("visualMotion", motionActive);
+            if (motionActive) {
+                current.put("motionStartedNs", motionStartedNs);
+                current.put("motionProfile", "linear +/-30 degrees, four-second cycle, reversal at ends");
+            }
             current.put("expectedFullscreen", fullscreenSuite);
-            if (fullscreenSuite) current.put("windowContext", BenchContext.capture(mc.getWindow().handle()));
+            if (fullscreenSuite) current.put("windowContext", BenchContext.capture(mc.getWindow().handle(), expectedVsync));
             current.put("camera", new double[]{mc.player.getX(), mc.player.getY(), mc.player.getZ(), mc.player.getXRot(), mc.player.getYRot()});
             current.put("nanoRange", new long[] {System.nanoTime(), 0});
             loadStartedNs = System.nanoTime();
@@ -120,6 +146,25 @@ public class PacingBench implements ClientModInitializer {
         });
     }
 
+    static void motionCheck(int index) throws Exception {
+        // Build the visual target after stationary measurements, so it cannot
+        // change the existing flat-world timing workload. Only the disposable world is edited.
+        game(() -> variableLoad = false);
+        var server = mc.getSingleplayerServer();
+        server.submit(() -> {
+            var source = server.createCommandSourceStack();
+            server.getCommands().performPrefixedCommand(source,
+                "fill -24 -60 12 24 -40 12 minecraft:white_concrete");
+            for (int x = -24; x <= 24; x += 4)
+                server.getCommands().performPrefixedCommand(source,
+                    "fill " + x + " -60 12 " + (x + 1) + " -40 12 minecraft:black_concrete");
+        }).get(10, TimeUnit.SECONDS);
+        Thread.sleep(3000); // let the new chunk meshes arrive before motion
+        game(() -> { motionStartedNs = System.nanoTime(); nextLabelNs = 0; motionActive = true; });
+        phase(index, 120, !fixedPolicy.equals("legacy"), true, fixedPolicy, 0);
+        game(() -> motionActive = false);
+    }
+
     public void onInitializeClient() {
         Thread.ofPlatform().daemon().start(() -> {
             try {
@@ -127,7 +172,7 @@ public class PacingBench implements ClientModInitializer {
                 mc = Minecraft.getInstance();
                 game(() -> {
                     mc.options.framerateLimit().set(120);
-                    mc.options.enableVsync().set(true);
+                    check(mc.options.enableVsync().get() == expectedVsync, "VSync fixed in startup options");
                     mc.options.inactivityFpsLimit().set(InactivityFpsLimit.MINIMIZED);
                     mc.createWorldOpenFlows().createFreshLevel("pacing-benchmark",
                         new LevelSettings("Pacing benchmark", GameType.CREATIVE,
@@ -170,9 +215,11 @@ public class PacingBench implements ClientModInitializer {
                 game(() -> check((SDLVideo.SDL_GetWindowFlags(mc.getWindow().handle()) & SDLVideo.SDL_WINDOW_INPUT_FOCUS) != 0, "Window must have focus"));
                 guarded = true;
                 if (fullscreenSuite) {
-                    check(fixedPolicy.equals("legacy") || fixedPolicy.equals("ready"), "Known fixed policy");
+                    check(fixedPolicy.equals("legacy") || fixedPolicy.equals("ready") || fixedPolicy.equals("precise"), "Known fixed policy");
                     int[] caps = {50, 60, 120, 120};
-                    for (int i = 0; i < caps.length; i++) phase(i, caps[i], fixedPolicy.equals("ready"), i == 3, fixedPolicy, 0);
+                    if (!motion.equals("only"))
+                        for (int i = 0; i < caps.length; i++) phase(i, caps[i], !fixedPolicy.equals("legacy"), i == 3, fixedPolicy, 0);
+                    if (!motion.equals("none")) motionCheck(caps.length);
                 } else if (presentationSuite) {
                     // Factor presentation and queue control independently; retain an
                     // unchanged legacy baseline. Reverse the loaded sweep to expose order effects.

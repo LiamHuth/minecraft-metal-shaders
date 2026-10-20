@@ -11,6 +11,7 @@
 #include "mcpresentpolicy.h"
 
 static NSString *const MCDisplayMode = @"mcopt.display-link";
+void mc_sleep_precise(int64_t ns);
 // Lifecycle and renderer fences share the render thread. Track registrations rather than
 // the user's enabled preference: a retiring link still needs its owning run loop.
 static _Thread_local unsigned int registeredLinks;
@@ -188,7 +189,7 @@ void mc_display_link_pause(void *handle) {
 void mc_display_link_configure(void *handle, int mode, int queueLimit) {
     MCDisplayLink *p = handle;
     if (!p || p->retiring) return;
-    mode = MAX(MC_PRESENT_CLOCK, MIN(MC_PRESENT_ADAPTIVE, mode));
+    mode = MAX(MC_PRESENT_CLOCK, MIN(MC_PRESENT_PRECISE, mode));
     queueLimit = MAX(0, MIN(3, queueLimit));
     if (p->presentationMode == mode && p->queueLimit == queueLimit) return;
     p->presentationMode = mode;
@@ -196,7 +197,7 @@ void mc_display_link_configure(void *handle, int mode, int queueLimit) {
     p->lastInput = p->queueCooldown = 0;
     mc_pacing_reset(&p->pacing);
     // Do not reset feedback: callbacks for already submitted frames still own it.
-    if (p->logging) NSLog(@"[mcopt] presentation policy=%d queue=%d (0=clock 1=ready 2=duration 3=adaptive)", mode, queueLimit);
+    if (p->logging) NSLog(@"[mcopt] presentation policy=%d queue=%d (0=clock 1=ready 2=duration 3=adaptive 4=precise)", mode, queueLimit);
 }
 
 // Only the render thread touches this list. Status is polled, never waited on: a delayed
@@ -324,13 +325,22 @@ static int beginPresentation(MCDisplayLink *p, int rate) {
             serviceDisplayLoop();
     }
     if (!(window.occlusionState & NSWindowOcclusionStateVisible)) return 0;
-    if (p->presentationMode == MC_PRESENT_READY) {
+    if (p->presentationMode == MC_PRESENT_READY || p->presentationMode == MC_PRESENT_PRECISE) {
         // A single pre-input cap, without rounding to callback/display intervals.
         double due = p->lastInput > 0 ? p->lastInput + 1.0 / rate : 0;
         while (CACurrentMediaTime() < due) {
             double remaining = fmax(0, due - CACurrentMediaTime());
-            SInt32 result = CFRunLoopRunInMode((CFStringRef)MCDisplayMode, remaining, true);
-            if (result == kCFRunLoopRunFinished) [NSThread sleepForTimeInterval:remaining];
+            if (p->presentationMode == MC_PRESENT_PRECISE) {
+                // Isolate timer accuracy from the ready policy's acquisition/deadline
+                // behavior. Reuse the legacy limiter's non-coalescable timer. Keep
+                // the private run loop progressing at least once per millisecond:
+                // display transactions can be needed by outstanding GPU commands.
+                mc_sleep_precise((int64_t)ceil(fmin(remaining, .001) * 1e9));
+                CFRunLoopRunInMode((CFStringRef)MCDisplayMode, 0, true);
+            } else {
+                SInt32 result = CFRunLoopRunInMode((CFStringRef)MCDisplayMode, remaining, true);
+                if (result == kCFRunLoopRunFinished) [NSThread sleepForTimeInterval:remaining];
+            }
         }
     }
     // Duration policies cap presentation itself. No second CPU/callback limiter.

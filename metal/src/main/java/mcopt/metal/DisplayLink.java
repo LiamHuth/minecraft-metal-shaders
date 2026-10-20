@@ -15,6 +15,7 @@ public final class DisplayLink {
 			case "clock" -> 0;
 			case "ready" -> 1;
 			case "adaptive" -> 3;
+			case "precise" -> 4;
 			default -> 2;
 		};
 	}

@@ -28,6 +28,7 @@ int main(void) {
     mc_present_completed(&p, c, 3, .1, 0);
     assert(p.latestShown == b && mc_present_backlog(&p).gpu == MC_PRESENT_RECEIPTS);
     assert(mc_present_duration(MC_PRESENT_READY, 50, .030, .0417, 1) == 0);
+    assert(mc_present_duration(MC_PRESENT_PRECISE, 50, .030, .0417, 1) == 0);
     assert(mc_present_duration(MC_PRESENT_DURATION, 50, .030, .0417, 1) == .020);
     assert(mc_present_duration(MC_PRESENT_ADAPTIVE, 120, .020, .0417, 0) == 1.0/120);
     assert(fabs(mc_present_duration(MC_PRESENT_ADAPTIVE, 120, .020, .0417, 1) - .021) < 1e-9);

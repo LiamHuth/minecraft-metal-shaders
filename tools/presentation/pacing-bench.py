@@ -15,9 +15,16 @@ parser.add_argument("--output", type=Path, required=True)
 parser.add_argument("--java-home", type=Path, required=True)
 parser.add_argument("--prepare-only", action="store_true")
 parser.add_argument("--suite", choices=["clock", "presentation", "fullscreen"], default="clock")
-parser.add_argument("--policy", choices=["legacy", "ready"], default="legacy",
+parser.add_argument("--policy", choices=["legacy", "ready", "precise"], default="legacy",
                     help="Fixed startup policy for the fullscreen suite; no live toggles")
+parser.add_argument("--vsync", choices=["on", "off"], default="on")
+parser.add_argument("--motion", choices=["none", "append", "only"], default="none",
+                    help="Fullscreen visual tearing check; append after timings or run alone")
 opts = parser.parse_args()
+if opts.vsync == "off" and (opts.suite != "fullscreen" or opts.policy != "legacy"):
+    parser.error("VSync-off control requires fullscreen legacy; candidate still requires VSync")
+if opts.motion != "none" and opts.suite != "fullscreen":
+    parser.error("Motion check requires a fixed fullscreen session")
 jar = opts.jar.resolve()
 output = opts.output.resolve()
 output.mkdir(parents=True, exist_ok=False)  # preserve previous measurements
@@ -46,7 +53,7 @@ for uid, version in [("org.lwjgl3", "3.4.3"), ("net.minecraft", "26.3"), ("net.f
 (game / "config").mkdir()
 shutil.copy2(jar, game / "mods")
 (game / "options.txt").write_text(
-    "pauseOnLostFocus:false\nenableVsync:true\nmaxFps:120\n"
+    f"pauseOnLostFocus:false\nenableVsync:{str(opts.vsync == 'on').lower()}\nmaxFps:120\n"
     f"fullscreen:{str(opts.suite == 'fullscreen').lower()}\nexclusiveFullscreen:false\n"
     "renderDistance:4\nsimulationDistance:5\nlang:en_us\nonboardAccessibility:false\n")
 (game / "config/mcopt.properties").write_text(
@@ -75,24 +82,32 @@ subprocess.run(["clang", "-fno-objc-arc", "-O2", "-Wall", "-dynamiclib", "-mmaco
 args = [
     str(java / "java"), "-XstartOnFirstThread", "-Xmx2G", "--enable-native-access=ALL-UNNAMED",
     "-Dmcopt.shade=true", "-Dmcopt.shade.diag=false",
-    f"-Dmcopt.metal.displayLink={str(opts.suite == 'fullscreen' and opts.policy == 'ready').lower()}",
-    "-Dmcopt.metal.displayLink.presentation=ready", "-Dmcopt.metal.displayLink.queue=0",
+    f"-Dmcopt.metal.displayLink={str(opts.suite == 'fullscreen' and opts.policy != 'legacy').lower()}",
+    f"-Dmcopt.metal.displayLink.presentation={opts.policy if opts.policy != 'legacy' else 'ready'}", "-Dmcopt.metal.displayLink.queue=0",
     "-Dmcopt.metal.gpuTimes=true", "-Dmcopt.metal.latency=true",
     f"-Dmcopt.bench.output={output / 'measurements.json'}",
     f"-Dmcopt.bench.loadLibrary={load_library}",
     f"-Dmcopt.bench.suite={opts.suite}",
     f"-Dmcopt.bench.policy={opts.policy}",
+    f"-Dmcopt.bench.vsync={str(opts.vsync == 'on').lower()}",
+    f"-Dmcopt.bench.motion={opts.motion}",
     "-classpath", ":".join(cp), "net.fabricmc.loader.impl.launch.knot.KnotClient",
     "--username", "PacingTest", "--uuid", "00000000-0000-0000-0000-000000000001",
     "--accessToken", "0", "--version", "26.3", "--gameDir", str(game),
     "--assetsDir", str(prism / "assets"), "--assetIndex", "34", "--width", "640", "--height", "400"]
 if opts.suite == "fullscreen":
     args.append("--fullscreen")
+if opts.vsync == "off":
+    # Shade.init otherwise enables native display sync even when the game's
+    # VSync option is off. Override only in this explicit unsynchronized control.
+    args.insert(1, "-Dmcopt.metal.paceSync=false")
 (output / "manifest.json").write_text(json.dumps({
     "jar": str(jar), "sha256": hashlib.sha256(jar.read_bytes()).hexdigest(),
     "game": str(game), "args": args, "metalValidation": False,
     "suite": opts.suite,
     "policy": opts.policy if opts.suite == "fullscreen" else "mixed",
+    "vsync": opts.vsync, "motion": opts.motion,
+    "motionProtocol": "Visual check only: striped wall, constant-speed yaw +/-30 degrees per four seconds (turns at ends), 120 FPS cap with GPU work changing every 237ms. Software timestamps do not detect tearing.",
     "protocol": ("Fullscreen HDR from startup; fixed policy per process; 900p output; 50/60/120 light and 120 time-based varying GPU load; 3s settle + 10s sample"
         if opts.suite == "fullscreen" else "Windowed HDR; 50/60/120 light and 120 varying GPU load; legacy/ready/duration/duration+queue2/duration+queue3; reverse loaded repeat; 3s settle + 8s sample"
         if opts.suite == "presentation" else "Windowed HDR 1280x800; 50 FPS ABBA, 60 on/off, 120 off/on; 4s settle + 12s sample; variable GPU-load 120 FPS ABBA"),
