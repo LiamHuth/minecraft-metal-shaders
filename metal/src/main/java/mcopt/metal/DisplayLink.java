@@ -9,7 +9,8 @@ public final class DisplayLink {
 		Status(String suffix) { this.messageKey = "message.mcopt.promotion_" + suffix; }
 	}
 	public static final String KEY = "mcopt.metal.displayLink";
-	static final int LATENCY = Integer.getInteger("mcopt.metal.displayLink.latency", 1) == 2 ? 2 : 1;
+	// Reserved native ABI argument; CADisplayLink does not impose a presentation-latency budget.
+	static final int LATENCY = 0;
 	static final boolean LOG = Boolean.parseBoolean(System.getProperty("mcopt.metal.displayLink.log", "true"));
 	static MetalSurface surface;
 	// This diagnostic build enables the recorder by default; disable for timing comparisons.
@@ -35,7 +36,7 @@ public final class DisplayLink {
 			trace("session version=" + net.fabricmc.loader.api.FabricLoader.getInstance().getModContainer("mcopt-metal")
 					.map(mod -> mod.getMetadata().getVersion().getFriendlyString()).orElse("unknown")
 				+ " os=" + System.getProperty("os.version") + " java=" + System.getProperty("java.version")
-				+ " enabled=" + enabled() + " latency=" + LATENCY);
+				+ " enabled=" + enabled() + " pacer=CADisplayLink");
 			System.out.println("[mcopt] presentation diagnostics: " + path);
 		} catch (java.io.IOException e) {
 			System.err.println("[mcopt] could not open presentation diagnostics: " + e.getMessage());

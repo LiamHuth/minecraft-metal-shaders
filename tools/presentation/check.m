@@ -128,13 +128,14 @@ int main(int argc, const char **argv) { @autoreleasepool {
     Ctx *ctx = mc_create(name,sizeof(name),error,sizeof(error));
     require(ctx != NULL,error);
     Enc *enc = mc_enc_new(ctx);
-    [window orderFront:nil]; events();
+    [window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; events();
     for (int mode = 0; mode < 2; mode++) {
         mc_xdr_enable(mode);
         mc_layer_configure(ctx,layer,480,300,1);
         layer.framebufferOnly = NO; // read back the actual presented drawable to verify colour
         void *link = mc_display_link_create(layer,argc > 1 ? atoi(argv[1]) : 1,1);
         require(link != NULL,"create display link");
+        require(layer.displaySyncEnabled && layer.maximumDrawableCount == 3,"paced VSync preserves drawable count");
         MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:480 height:300 mipmapped:NO];
         td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
         id<MTLTexture> src = [ctx->device newTextureWithDescriptor:td];
@@ -211,6 +212,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
         fprintf(stdout,"PASS %s: %d callbacks in %.2f s; caps 120/60/90, resize, hide/restore, late frame, pixels\n",mode?"HDR":"SDR",callbacks,CACurrentMediaTime()-start);
         require(callbacks>1500,"callbacks actually arrived");
         closeLink(link);
+        require(layer.displaySyncEnabled && layer.maximumDrawableCount == 3,"legacy VSync/drawable count restored");
         runLoopFenceCheck(ctx,enc,layer,src);
         transitionCheck(ctx,enc,layer,src);
         [readback release]; [src release]; [hdr release];

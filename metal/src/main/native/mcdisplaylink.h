@@ -1,7 +1,8 @@
 // All lifecycle/acquisition calls run on the game's render thread, in a private run-loop mode.
 #import <QuartzCore/CAMetalLayer.h>
 #import <Metal/Metal.h>
-void *mc_display_link_create(CAMetalLayer *layer, int latency, int log);
+// The former CAMetalDisplayLink latency argument is retained for native ABI compatibility.
+void *mc_display_link_create(CAMetalLayer *layer, int unusedLatency, int log);
 // Returns 0 while encoded frames are still in flight; retain the handle and retry.
 // Returns 1 after invalidating/releasing it (also for NULL). Never blocks on the GPU.
 int mc_display_link_close(void *handle);

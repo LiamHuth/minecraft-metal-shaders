@@ -18,22 +18,25 @@ Turn **VSync on** and set **Max Framerate to 120** (or your preferred lower cap)
 
 For an A/B comparison, keep VSync and the FPS cap identical and press the ProMotion shortcut. Switching starts at the next frame boundary and completes after outstanding presentation frames finish; no restart is needed. The action bar confirms the actual state for a few seconds after toggling, and F3 shows it continuously: **Active**, **Off**, **Switching**, or the reason it is waiting/using the standard fallback. An enabled preference alone does not mean display-link pacing is active. Explicit `-D` arguments still override the saved preference on the next launch. Turning ProMotion off keeps the 1.2.5 HDR changes and the haze fix while using the original pacing/presentation path. VSync off also uses the legacy path.
 
+The old `mcopt.metal.displayLink.latency` option has no effect with the new callback-only pacer.
+
 Optional:
 
-- `-Dmcopt.metal.displayLink.latency=2`: request Apple's two-frame GPU budget instead of one. May help a heavy workload but can increase latency.
 - `-Dmcopt.metal.displayLink.log=false`: disable the periodic native pacing report.
 
 ## Behavior
 
-The game waits for `CAMetalDisplayLink` before SDL input polling. The link supplies the drawable; this path never calls `nextDrawable`. The normal HDR/SDR presentation shaders draw directly into it. After committing the frame, the drawable is presented before the update's CPU deadline when possible. This avoids the separate staging/presentation queue and the old after-render pacer in this mode.
+The game waits for a window-following `CADisplayLink` before SDL input polling, then acquires an ordinary layer drawable. The layer keeps VSync and its original drawable pool while pacing is enabled. Acquisition backpressure therefore precedes input sampling. Presentation uses the same `MTLCommandBuffer.presentDrawable` scheduling as the legacy renderer, without an extra presentation target imposed by `CAMetalDisplayLink`. HDR/SDR composition is unchanged. Pacing does not change the configured drawable count.
 
-The preferred rate follows the window's display maximum and the game's current cap. A timestamp grid enforces the average cap if the OS rounds a request upward (observed with 90 requested on a 120 Hz panel). Minecraft's own lower menu cap still applies. The ordinary limiter remains available if the cap drops mid-frame. Caps below 30, minimization, and VSync off return to the legacy path.
+The callback rate requests the window's display maximum, independently of the user's FPS cap. A timestamp grid enforces the average cap without catch-up bursts. This avoids asking macOS for 50 Hz, receiving 60 Hz callbacks, then skipping to 33.3 ms intervals; a 120 Hz callback grid offers finer 16.7/25 ms intervals. The system still chooses the actual cadence. Minecraft's lower menu cap applies; the ordinary limiter remains available if the cap drops mid-frame. Caps below 30, minimization, and VSync off return to the legacy path.
 
-Lifecycle, callbacks and rendering stay on the game thread. A private run-loop mode also runs Core Animation's common-mode observers, so layer transactions continue to reach the compositor. Disabling, resizing, and fallback first retire the link: stop acquiring frames, keep every encoded drawable and its command buffer alive, and poll completion at frame boundaries. This includes frames encoded but not yet committed. Until completion, presentation is skipped and the layer remains unchanged. Only then is the link paused, invalidated exactly once and released, and the Core Animation transaction flushed before ordinary drawable acquisition resumes. Pending resize/VSync configurations are coalesced during retirement. Close attempts service the private run-loop mode with a 1 ms budget before checking completion again. Renderer GPU fences also service that mode while a link remains registered, including during retirement and shutdown. Merely pausing is insufficient for changing `maximumDrawableCount`. Legacy presentation is drained before the link takes over acquisition. Callback waits are bounded to 50 ms; three consecutive timeouts request a return to the legacy path with a later retry.
+Windowed cadence improvements do not establish physical Adaptive Sync. Apple's external-display Adaptive Sync guidance also requires fullscreen and a variable refresh display mode. Fullscreen and external-display behavior must be validated separately.
+
+Lifecycle, callbacks and rendering stay on the game thread. A private run-loop mode also runs Core Animation's common-mode observers, so layer transactions continue to reach the compositor. Disabling, resizing, and fallback first retire the link: stop acquiring frames, keep every encoded drawable and its command buffer alive, and poll completion at frame boundaries. This includes frames encoded but not yet committed. Until completion, presentation is skipped and the layer remains unchanged. Only then is the link paused, invalidated exactly once and released, and the Core Animation transaction flushed before ordinary drawable acquisition resumes. Pending resize/VSync configurations are coalesced during retirement. Close attempts service the private run-loop mode with a 1 ms budget before checking completion again. Renderer GPU fences also service that mode while a link remains registered, including during retirement and shutdown. Layer reconfiguration waits for retirement. Legacy presentation is drained before the link takes over acquisition. Callback waits are bounded to 50 ms; ordinary `nextDrawable` acquisition retains the layer's system timeout. Three consecutive timeouts request a return to the legacy path with a later retry.
 
 ## Measurements and validation
 
-The native report appears in Prism's console/stderr every 10 seconds while the link remains active. It includes the requested rate, valid presentation timestamps, average and p95 display intervals, callback-to-display time, late CPU commits, missing drawables/timestamps, and GPU errors. P95 uses 0.5 ms histogram bins (values above 127.5 ms share the final bin). Missing timestamps are counted separately; they are not treated as successful measurements. Callback-to-display is **not** a measurement of physical input-to-photon latency. Windowed macOS compositing may add buffering despite a one-frame preference.
+The native report appears in Prism's console/stderr every 10 seconds while the link remains active. It includes the requested rate, valid presentation timestamps, average and p95 display intervals, callback-to-display time, commits after the callback target, missing drawables/timestamps, and GPU errors. P95 uses 0.5 ms histogram bins (values above 127.5 ms share the final bin). Missing timestamps are counted separately; they are not treated as successful measurements. Callback-to-display is **not** a measurement of physical input-to-photon latency. Windowed macOS compositing still adds buffering; callback targets are not physical scanout timestamps.
 
 Existing `mcopt.metal.gpuTimes` / `mcopt.own.int.frameLog` instrumentation works with both paths, including the provided drawable's presentation timestamp. Compare stable runs at the same window size, HDR mode, scene, FPS cap and power settings. Exclude startup, shader compilation, resize and other transitions. Compare displayed-frame intervals and hitches, rather than relying on the rendered FPS counter.
 
@@ -49,7 +52,7 @@ Validation of `promotion.3` on the M4 Pro passed the SDR/HDR native suite (24 de
 
 Still needs real-world testing: sustained gameplay on the external Studio Display XDR, fullscreen transitions, moving the game between displays, sleep/wake, and heavily GPU-bound worlds. Lower input latency is a goal to measure, not a result claimed by this prototype.
 
-API references: [CAMetalDisplayLink](https://developer.apple.com/documentation/quartzcore/cametaldisplaylink), [targetTimestamp](https://developer.apple.com/documentation/quartzcore/cametaldisplaylink/update/targettimestamp), [preferredFrameLatency](https://developer.apple.com/documentation/quartzcore/cametaldisplaylink/preferredframelatency).
+API references: [window display links](https://developer.apple.com/documentation/appkit/nswindow/displaylink%28target%3Aselector%3A%29), [CADisplayLink rate requests](https://developer.apple.com/documentation/quartzcore/cadisplaylink/preferredframeraterange). Earlier implementation: [CAMetalDisplayLink](https://developer.apple.com/documentation/quartzcore/cametaldisplaylink), [targetTimestamp](https://developer.apple.com/documentation/quartzcore/cametaldisplaylink/update/targettimestamp), [preferredFrameLatency](https://developer.apple.com/documentation/quartzcore/cametaldisplaylink/preferredframelatency).
 
 ## Diagnostic recorder (`promotion.4-diagnostic`)
 
@@ -105,7 +108,9 @@ An isolated Minecraft/Fabric world also passed three windowed HDR on/off cycles 
 
 `pacing-bench.py` measures both presentation paths in the same disposable offline Fabric world. It leaves the renderer unchanged and adds a test-only timestamp immediately after SDL input polling. `GpuTimes` supplies GPU and Metal presentation timestamps for both paths. The benchmark does not change the user's Prism profile, launch fullscreen, or enable Metal API validation.
 
-Leave its window focused until it exits (about three minutes). Minecraft's AFK throttle is disabled only in the temporary profile; every measured frame records the actual FPS cap, pacing state, focus and fullscreen flags. The test runs 50 FPS in Off/On/On/Off order, followed by 60 On/Off and 120 Off/On. Each phase excludes four seconds of settling and measures fifteen seconds. Transition diagnostics remain enabled, so this does not measure toggle latency.
+Leave its window focused until it exits (about four minutes). Minecraft's AFK throttle is disabled only in the temporary profile; every measured frame records the actual FPS cap, pacing state, focus and fullscreen flags. The test runs 50 FPS in Off/On/On/Off order, followed by 60 On/Off and 120 Off/On, then another 120 FPS Off/On/On/Off comparison under varying GPU load. Each phase excludes four seconds of settling and measures twelve seconds. Transition diagnostics remain enabled, so this does not measure toggle latency.
+
+The load helper adds compute work to presenting command buffers in both modes: four sustained work levels, changing every 24 frames, plus a burst every eleven frames. This deliberately makes actual delivery vary below the 120 FPS cap. It measures behavior under synthetic GPU contention, not performance in a representative complex world. The helper is compiled into the disposable test profile and is never packaged in the mod JAR.
 
 ```sh
 python3 tools/presentation/pacing-bench.py /absolute/path/to/mod.jar \
@@ -115,7 +120,7 @@ python3 tools/presentation/pacing-analyze.py /tmp/mcopt-pacing-comparison/measur
 
 The output directory must be new. `--prepare-only` compiles the helper without launching. The runner records the JAR checksum and launch arguments; the analyzer reports timestamp coverage and rejects invalid comparisons. Presentation intervals use unique Metal `presentedTime` values within each measured phase, not GPU completion or callback-delivery times. Poll-to-presentation measures the software pipeline, not physical input-to-photon latency. A focused window and `Active` status do not prove a particular physical panel refresh rate.
 
-Observed on the M4 Pro's built-in 120 Hz display, macOS 27.0.1, full-scene HDR at 1280×800, VSync on, with `promotion.5-diagnostic` (`e318ee7`):
+Historical baseline (eight phases, fifteen-second samples, no added GPU load): M4 Pro's built-in 120 Hz display, macOS 27.0.1, full-scene HDR at 1280×800, VSync on, with `promotion.5-diagnostic` (`e318ee7`):
 
 | Cap | Off: interval p95 | On: interval p95 | Off: median poll-to-presentation | On: median poll-to-presentation |
 | --- | ---: | ---: | ---: | ---: |
@@ -128,3 +133,30 @@ All eight measured phases retained focus, the requested cap and the expected pac
 At 50 FPS, On averaged almost exactly 50 frames per second but alternated 16.67 and 33.33 ms intervals (about 80%/20%). Off predominantly used 16.67 and 25 ms. This is consistent with On selecting frames from a 60 Hz schedule while Off uses finer presentation opportunities. It does not directly measure the callback frequency or panel refresh rate. Apple's rate request is a preference; the OS can round it. The current deadline grid preserves an average cap without guaranteeing evenly spaced frames.
 
 At 60 and 120 FPS, On eliminated the occasional short/long intervals seen with Off in this sample, but increased the software latency estimate by about 20 and 11 ms respectively. These measurements do not demonstrate an overall user improvement. Investigate rate rounding and the additional presentation delay before recommending the feature. This is a light, static scene with short samples, not a GPU-saturation, external-display, fullscreen or physical-latency benchmark.
+
+## Callback-only experiment (`promotion.7-diagnostic`)
+
+This is an experimental checkpoint, not a recommended pacing upgrade. VSync remains enabled and the feature remains opt-in. HDR, the sun-haze correction and the existing GPU-fence lifecycle protections are retained.
+
+A focused native probe isolated a source of delay in the original path on this machine: `CAMetalDisplayLink` drawable targets were 33.33 ms later than their CPU submission deadlines, even when rendering finished much earlier. Requesting 120 Hz callbacks, explicitly flushing transactions, and polling input later did not remove that gap. A callback-only `CADisplayLink` with ordinary layer drawables avoided the imposed presentation target. This is an observation on this OS/display combination, not a general latency guarantee for either API.
+
+The first callback-only candidate (`promotion.6`) forced two drawables. In Minecraft this reduced normal 120 FPS delivery to about 80 FPS, so that restriction was removed. `promotion.7` preserves the configured drawable pool, requests the screen's maximum callback rate, and acquires a drawable before input polling.
+
+Revised Minecraft test: same built-in display, windowed HDR at 1280×800, VSync on; twelve phases with four seconds settling and twelve seconds measurement each. JAR SHA-256: `9ce3293d86579923bfe9712dae2eb29beb9334ca0ab67d1d9e6f6c525a6eabd6`.
+
+| Case | Off → On displayed FPS | Off → On interval p95 | Off → On median poll-to-presentation |
+| --- | ---: | ---: | ---: |
+| 50 FPS, repeated | 49.91–49.94 → 50.01–50.06 | 25.00 → 33.33 ms | 28.22–28.49 → 24.87 ms |
+| 60 FPS | 59.88 → 59.94 | 16.67 → 25.00 ms | 29.72 → 24.90 ms |
+| 120 FPS, light scene | 119.50 → 119.92 | 8.33 → 8.33 ms | 29.93 → 32.51 ms |
+| 120 FPS, varying GPU load, repeated* | 99.74–100.05 → 94.90–95.03 | 16.67 → 16.67 ms | 41.44–41.73 → 32.53–32.54 ms |
+
+All twelve phases retained focus, windowed HDR, the requested cap and the expected pacing state. No recorder slots were dropped; clock-offset drift was 42 ns. The eight light-scene phases and the two loaded On phases had complete, unique presentation timestamps. At light 120 FPS, interval standard deviation improved from 0.54 to 0.22 ms, but median software latency increased by 2.58 ms.
+
+*The loaded Off phases lacked both callback and presentation timestamps for 26/1,228 and 21/1,221 submitted frames. The table reports observed presentation timestamps only. The recorder reads native slots at the final report, rather than copying them at GPU retirement, and waits another second after the final phase; this is not explained by copying timestamps immediately at command completion. Dropped presentations are a possibility, but the available evidence cannot distinguish that from missing notifications. The analyzer correctly rejects these two phases as fully validated comparisons. Loaded On had no missing timestamps. Its interval standard deviation was about 3.99 ms versus 3.48–3.54 ms for the observed baseline frames.
+
+The build and windowed native Metal validation passed: SDR/HDR pixels, 1,560 frames per format, resize/hide/restore, twelve delayed-GPU transitions per format, and run-loop-dependent completion during active/retiring/close states. The Minecraft run exited normally with no pacing GPU errors. Fullscreen was not tested.
+
+This experiment removes much of the old path's latency penalty, but does not meet all three goals together. Lower caps have worse frame spacing; the loaded comparison suggests a throughput tradeoff; light 120 FPS has higher median software latency. These tests neither measure physical input-to-photon latency nor prove tear-free scanout or physical VRR.
+
+Next investigation: schedule work to finish before a presentation opportunity, using measured CPU/GPU cost, instead of always starting on a callback. In the 60 FPS On sample, frames shown about 25 ms after input had a median input-to-GPU-finish time of 6.59 ms, while the 33 ms group took 9.29 ms. That correlation is consistent with straddling an 8.33 ms presentation boundary. Also examine avoidable callback waits when rendering is already below the cap, and resolve missing baseline presentation notifications before claiming an under-load improvement.

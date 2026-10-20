@@ -48,12 +48,19 @@ for name, phase in data["phases"].items():
     target = 1000 / phase["cap"]
     row = result[name] = {
         "cap": phase["cap"], "enabled": phase["enabled"],
+        "variableGpuLoad": phase.get("variableGpuLoad", False),
         "validContext": phase["fullscreenFrames"] == 0 and phase["unfocusedFrames"] == 0
             and phase["states"] == {expected: phase["frames"]} and phase["hdr"]
             and phase.get("actualCaps") == {str(phase["cap"]): phase["frames"]},
         "states": phase["states"], "unfocusedFrames": phase["unfocusedFrames"],
         "presentingSubmits": len(indices),
         "missingPresentationTimestamps": sum(gpu["presentedTimeNs"][i] == 0 for i in indices),
+        # Read at report time, after all phases and a final drain period. A zero
+        # callback is distinct from a delivered callback reporting no presentation;
+        # neither is silently discarded when assessing measurement coverage.
+        "missingPresentedCallbacks": sum(gpu["presentedHandlerNs"][i] == 0 for i in indices),
+        "callbacksWithoutPresentation": sum(gpu["presentedHandlerNs"][i] > 0
+            and gpu["presentedTimeNs"][i] == 0 for i in indices),
         "duplicatePresentationTimestamps": duplicate_times,
         "intervalMs": summary(intervals), "pollToPresentationMs": summary(latency),
         "gpuMs": summary(durations),
@@ -65,12 +72,16 @@ for name, phase in data["phases"].items():
     row["validForComparison"] = (row["validContext"] and len(intervals) >= 10
         and row["missingPresentationTimestamps"] == 0 and duplicate_times == 0
         and len(latency) == len(shown) and gpu["dropped"] == 0)
-    print(f"{name:14} valid={row['validContext']} shown={len(shown)} "
+    print(f"{name:14} context={row['validContext']} comparison={row['validForComparison']} shown={len(shown)} "
           f"FPS={fmt(row['displayedFps'])} interval mean/p95={fmt(row['intervalMs']['mean'])}/{fmt(row['intervalMs']['p95'])}ms "
           f"jitter SD={fmt(row['intervalMs']['stddev'])}ms "
           f"poll->shown median/p95={fmt(row['pollToPresentationMs']['p50'])}/{fmt(row['pollToPresentationMs']['p95'])}ms "
           f"GPU median={fmt(row['gpuMs']['p50'])}ms")
     print("  interval bins:", row["intervalHistogramMs"])
+    if row["missingPresentationTimestamps"]:
+        print(f"  incomplete coverage: {row['missingPresentationTimestamps']} presentation timestamps missing, "
+              f"{row['missingPresentedCallbacks']} callbacks missing, "
+              f"{row['callbacksWithoutPresentation']} callbacks without presentation")
 path = args.report.with_name("summary.json")
 path.write_text(json.dumps(result, indent=2) + "\n")
 print(path)

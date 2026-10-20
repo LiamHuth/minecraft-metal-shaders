@@ -9,8 +9,8 @@ import java.util.List;
 import org.lwjgl.sdl.SDLMetal;
 
 /**
- * A CAMetalLayer on the SDL window. The drawable is fetched at blit time rather than frame start: holding it for
- * the whole frame only adds latency and can stall on a drawable the display hasn't released yet.
+ * A CAMetalLayer on the SDL window. Legacy presentation acquires at blit time. Display-paced
+ * presentation acquires before SDL input polling, so queue backpressure precedes sampled input.
  */
 final class MetalSurface implements GpuSurfaceBackend {
 	/** With vsync off, present only the last frame that makes each refresh (see mc_pace); -Dmcopt.metal.pace=false presents every frame. */

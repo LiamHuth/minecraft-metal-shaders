@@ -31,6 +31,8 @@ public class PacingBench implements ClientModInitializer {
     static Map<Integer, Integer> actualCaps;
     static int unfocused, fullscreen, frames;
     static boolean guarded;
+    static boolean variableLoad;
+    static int loadFrame;
 
     static void check(boolean ok, String why) { if (!ok) throw new AssertionError(why); }
     static void game(Runnable work) throws Exception { mc.submit(work).get(guarded ? 5 : 30, TimeUnit.SECONDS); }
@@ -48,10 +50,12 @@ public class PacingBench implements ClientModInitializer {
         if ((flags & SDLVideo.SDL_WINDOW_FULLSCREEN) != 0) fullscreen++;
     }
 
-    static void phase(int index, int cap, boolean enabled) throws Exception {
+    static void phase(int index, int cap, boolean enabled, boolean load) throws Exception {
         game(() -> {
             check(mc.gui.screen() == null && mc.gui.overlay() == null, "Gameplay must remain visible");
             mc.options.framerateLimit().set(cap);
+            variableLoad = load;
+            loadFrame = 0;
             System.setProperty(DisplayLink.KEY, Boolean.toString(enabled));
             note("prepare " + index + " cap=" + cap + " enabled=" + enabled);
         });
@@ -60,6 +64,7 @@ public class PacingBench implements ClientModInitializer {
             current = new LinkedHashMap<>();
             current.put("cap", cap);
             current.put("enabled", enabled);
+            current.put("variableGpuLoad", load);
             current.put("width", mc.getWindow().getWidth());
             current.put("height", mc.getWindow().getHeight());
             current.put("hdr", ShadeXdr.active() && ShadeXdr.fullScene());
@@ -71,7 +76,7 @@ public class PacingBench implements ClientModInitializer {
             phases.put(index + "-" + cap + "-" + (enabled ? "on" : "off"), current);
             note("measure " + index);
         });
-        Thread.sleep(15000);
+        Thread.sleep(12000);
         game(() -> {
             ((long[])current.get("nanoRange"))[1] = System.nanoTime();
             current.put("states", states);
@@ -118,9 +123,9 @@ public class PacingBench implements ClientModInitializer {
                 Thread.sleep(5000);
                 game(() -> check((SDLVideo.SDL_GetWindowFlags(mc.getWindow().handle()) & SDLVideo.SDL_WINDOW_INPUT_FOCUS) != 0, "Window must have focus"));
                 guarded = true;
-                int[] caps = {50, 50, 50, 50, 60, 60, 120, 120};
-                boolean[] enabled = {false, true, true, false, true, false, false, true};
-                for (int i = 0; i < caps.length; i++) phase(i, caps[i], enabled[i]);
+                int[] caps = {50, 50, 50, 50, 60, 60, 120, 120, 120, 120, 120, 120};
+                boolean[] enabled = {false, true, true, false, true, false, false, true, false, true, true, false};
+                for (int i = 0; i < caps.length; i++) phase(i, caps[i], enabled[i], i >= 8);
                 Thread.sleep(1000); // allow last presented callbacks to arrive
                 game(() -> {
                     Map<String, Object> report = new LinkedHashMap<>();

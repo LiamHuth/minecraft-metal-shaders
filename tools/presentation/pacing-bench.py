@@ -49,7 +49,7 @@ shutil.copy2(jar, game / "mods")
     "mcopt.shade=true\nmcopt.shade.hdrMode=scene\nmcopt.shade.output=2160\n")
 classes = output / "classes"
 classes.mkdir(exist_ok=True)
-sources = [Path(__file__).with_name(name) for name in ["PacingBench.java", "PollTimingMixin.java"]]
+sources = [Path(__file__).with_name(name) for name in ["PacingBench.java", "PollTimingMixin.java", "GpuLoad.java", "GpuLoadMixin.java"]]
 subprocess.run([str(java / "javac"), "-proc:none", "-classpath", ":".join(cp + [str(jar)]),
                 "-d", str(classes), *map(str, sources)], check=True)
 with zipfile.ZipFile(game / "mods/pacing-bench.jar", "w") as archive:
@@ -60,12 +60,18 @@ with zipfile.ZipFile(game / "mods/pacing-bench.jar", "w") as archive:
         "entrypoints": {"client": ["mcopt.pacingbench.PacingBench"]}, "mixins": ["pacing-bench.mixins.json"]}))
     archive.writestr("pacing-bench.mixins.json", json.dumps({
         "required": True, "package": "mcopt.pacingbench.mixin", "compatibilityLevel": "JAVA_25",
-        "client": ["PollTimingMixin"]}))
+        "client": ["PollTimingMixin", "GpuLoadMixin"]}))
+load_library = output / "libpacingload.dylib"
+subprocess.run(["clang", "-fno-objc-arc", "-O2", "-Wall", "-dynamiclib", "-mmacosx-version-min=15.0",
+    "-I", str(Path(__file__).resolve().parents[2] / "metal/src/main/native"),
+    "-framework", "Foundation", "-framework", "Metal", str(Path(__file__).with_name("load.m")),
+    "-o", str(load_library)], check=True)
 args = [
     str(java / "java"), "-XstartOnFirstThread", "-Xmx2G", "--enable-native-access=ALL-UNNAMED",
     "-Dmcopt.shade=true", "-Dmcopt.shade.diag=false", "-Dmcopt.metal.displayLink=false",
     "-Dmcopt.metal.gpuTimes=true", "-Dmcopt.metal.latency=true",
     f"-Dmcopt.bench.output={output / 'measurements.json'}",
+    f"-Dmcopt.bench.loadLibrary={load_library}",
     "-classpath", ":".join(cp), "net.fabricmc.loader.impl.launch.knot.KnotClient",
     "--username", "PacingTest", "--uuid", "00000000-0000-0000-0000-000000000001",
     "--accessToken", "0", "--version", "26.3", "--gameDir", str(game),
@@ -76,7 +82,7 @@ if opts.prepare_only:
 (output / "manifest.json").write_text(json.dumps({
     "jar": str(jar), "sha256": hashlib.sha256(jar.read_bytes()).hexdigest(),
     "game": str(game), "args": args, "metalValidation": False,
-    "protocol": "Windowed HDR 1280x800; 50 FPS ABBA, 60 on/off, 120 off/on; 4s settle + 15s sample",
+    "protocol": "Windowed HDR 1280x800; 50 FPS ABBA, 60 on/off, 120 off/on; 4s settle + 12s sample; variable GPU-load 120 FPS ABBA",
 }, indent=2) + "\n")
 # Do not profile with the Metal validation layer; this is a cadence measurement.
 env = {k: v for k, v in os.environ.items() if not k.startswith("MTL_DEBUG")}
@@ -84,7 +90,7 @@ with (output / "game.log").open("w") as log:
     process = subprocess.Popen(args, cwd=game, stdout=log, stderr=subprocess.STDOUT, env=env)
     (output / "game-pid").write_text(str(process.pid))
     try:
-        code = process.wait(timeout=270)
+        code = process.wait(timeout=330)
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait(timeout=5)
