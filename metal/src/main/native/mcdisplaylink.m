@@ -1,7 +1,6 @@
-// Render-budget pacing before SDL input polling. CADisplayLink follows the window while
-// ordinary VSync drawables use the legacy presentation API. CAMetalDisplayLink
-// assigned drawables a target 33 ms after their submission deadline on our macOS test rig.
-// Missing callbacks have a bounded wait; retirement continues servicing this private mode.
+// Presentation and queue experiments before SDL input polling. CADisplayLink keeps
+// the layer's run loop serviced; only the historical clock policy aligns to its ticks.
+// Ordinary VSync drawables retain the existing GPU/layer retirement protections.
 #import "mcdisplaylink.h"
 #import <QuartzCore/CADisplayLink.h>
 #import <QuartzCore/CATransaction.h>
@@ -9,6 +8,7 @@
 #include <math.h>
 #import "mcpresentationtrace.h"
 #include "mcpacing.h"
+#include "mcpresentpolicy.h"
 
 static NSString *const MCDisplayMode = @"mcopt.display-link";
 // Lifecycle and renderer fences share the render thread. Track registrations rather than
@@ -51,6 +51,7 @@ void mc_display_link_wait_for_command(id<MTLCommandBuffer> commandBuffer) {
     unsigned long samples, unavailable, deadlines, timeouts, intervals, gpuErrors;
     unsigned long histogram[256]; // half-millisecond bins, last bin = >=127.5 ms
     double lastPresented, intervalSum, latencySum, lastReport;
+    MCPresentFeedback feedback;
 }
 @end
 @implementation MCDisplayStats
@@ -61,7 +62,7 @@ void mc_display_link_wait_for_command(id<MTLCommandBuffer> commandBuffer) {
     id<CAMetalDrawable> drawable;
     id<MTLCommandBuffer> commandBuffer;
     MCDisplayStats *stats;
-    double began, deadline, inputReady;
+    double began, deadline, inputReady, minimumDuration;
     BOOL presented;
 }
 @end
@@ -81,6 +82,10 @@ void mc_display_link_wait_for_command(id<MTLCommandBuffer> commandBuffer) {
     double callbackTarget, callbackInterval, callbackAt;
     MCPacing pacing;
     unsigned long alignedFrames, unalignedFrames;
+    int presentationMode, queueLimit;
+    double lastInput, queueCooldown, queueWaitSeconds;
+    unsigned long queueWaits, queueTimeouts;
+    unsigned queueGpuHigh, queueDisplayHigh;
     BOOL waiting, retiring;
 }
 @end
@@ -113,7 +118,7 @@ void mc_display_link_wait_for_command(id<MTLCommandBuffer> commandBuffer) {
 static NSView *layerView(CAMetalLayer *layer) {
     if (![NSThread isMainThread]) return nil;
     for (CALayer *l = layer; l; l = l.superlayer)
-        if ([l.delegate isKindOfClass:[NSView class]]) return l.delegate;
+        if ([l.delegate isKindOfClass:[NSView class]]) return (NSView *)l.delegate;
     return nil;
 }
 static int maximumRate(CAMetalLayer *layer) {
@@ -159,7 +164,7 @@ void *mc_display_link_create(CAMetalLayer *layer, int unusedLatency, int log) {
         [p->link addToRunLoop:p->runLoop forMode:MCDisplayMode];
         registeredLinks++;
         mc_presentation_trace_note("link.create.end");
-        NSLog(@"[mcopt] render-budget pacing enabled (CADisplayLink clock, VSync, ordinary drawable pool)");
+        NSLog(@"[mcopt] presentation experiment enabled (VSync, ordinary drawable pool)");
         return p;
     } }
     return NULL;
@@ -171,12 +176,27 @@ void mc_display_link_pause(void *handle) {
     p->waiting = NO;
     p->callbackTarget = p->callbackInterval = p->callbackAt = 0;
     mc_pacing_reset(&p->pacing);
+    p->lastInput = 0;
     mc_presentation_mark("link.pause.begin", p, 0);
     p->link.paused = YES;
     mc_presentation_mark("link.pause.end", p, 0);
     [p->frame release];
     p->frame = nil;
     @synchronized(p->stats) { p->stats->lastPresented = 0; }
+}
+
+void mc_display_link_configure(void *handle, int mode, int queueLimit) {
+    MCDisplayLink *p = handle;
+    if (!p || p->retiring) return;
+    mode = MAX(MC_PRESENT_CLOCK, MIN(MC_PRESENT_ADAPTIVE, mode));
+    queueLimit = MAX(0, MIN(3, queueLimit));
+    if (p->presentationMode == mode && p->queueLimit == queueLimit) return;
+    p->presentationMode = mode;
+    p->queueLimit = queueLimit;
+    p->lastInput = p->queueCooldown = 0;
+    mc_pacing_reset(&p->pacing);
+    // Do not reset feedback: callbacks for already submitted frames still own it.
+    if (p->logging) NSLog(@"[mcopt] presentation policy=%d queue=%d (0=clock 1=ready 2=duration 3=adaptive)", mode, queueLimit);
 }
 
 // Only the render thread touches this list. Status is polled, never waited on: a delayed
@@ -257,6 +277,81 @@ static void report(MCDisplayLink *p) {
     NSLog(@"[mcopt] frame budget: %.2f ms, callback interval %.2f ms, aligned %lu, without extra tick %lu",
         p->pacing.budget * 1000, p->callbackInterval * 1000, p->alignedFrames, p->unalignedFrames);
     p->alignedFrames = p->unalignedFrames = 0;
+    NSLog(@"[mcopt] presentation queue: policy=%d limit=%d waits=%lu total=%.2f ms timeouts=%lu GPU/display high=%u/%u",
+        p->presentationMode, p->queueLimit, p->queueWaits, p->queueWaitSeconds * 1000,
+        p->queueTimeouts, p->queueGpuHigh, p->queueDisplayHigh);
+    p->queueWaits = p->queueTimeouts = 0;
+    p->queueWaitSeconds = 0;
+    p->queueGpuHigh = p->queueDisplayHigh = 0;
+}
+
+// Presentation receipts are independent of drawable/resource ownership. Never hold
+// drawables alive solely for notification delivery; that can exhaust the drawable pool.
+static void waitForQueue(MCDisplayLink *p, int cap) {
+    double began = CACurrentMediaTime();
+    if (!p->queueLimit || began < p->queueCooldown) return;
+    double stop = began + mc_present_wait_limit(cap);
+    BOOL waited = NO;
+    for (;;) {
+        MCPresentBacklog b;
+        @synchronized(p->stats) { b = mc_present_backlog(&p->stats->feedback); }
+        p->queueGpuHigh = MAX(p->queueGpuHigh, b.gpu);
+        p->queueDisplayHigh = MAX(p->queueDisplayHigh, b.display);
+        if (b.gpu + b.display < (unsigned)p->queueLimit) break;
+        double now = CACurrentMediaTime();
+        // Missing/delayed notifications are not a reason to freeze rendering. The
+        // normal drawable/GPU fences remain authoritative when this hint backs off.
+        if (now >= stop || (b.oldest > 0 && now - b.oldest > .150)) {
+            p->queueCooldown = now + 1;
+            p->queueTimeouts++;
+            break;
+        }
+        if (!waited) { p->queueWaits++; waited = YES; }
+        serviceDisplayLoop();
+    }
+    if (waited) p->queueWaitSeconds += CACurrentMediaTime() - began;
+}
+
+static int beginPresentation(MCDisplayLink *p, int rate) {
+    NSWindow *window = layerView(p->layer).window;
+    if (!window.visible) return 0;
+    CFRunLoopRunInMode((CFStringRef)MCDisplayMode, 0, true);
+    // A just-shown window's occlusion state arrives asynchronously. Allow its first
+    // transaction to reach AppKit instead of spinning through empty frames at startup.
+    if (!p->lastInput) {
+        double stop = CACurrentMediaTime() + .050;
+        while (!(window.occlusionState & NSWindowOcclusionStateVisible) && CACurrentMediaTime() < stop)
+            serviceDisplayLoop();
+    }
+    if (!(window.occlusionState & NSWindowOcclusionStateVisible)) return 0;
+    if (p->presentationMode == MC_PRESENT_READY) {
+        // A single pre-input cap, without rounding to callback/display intervals.
+        double due = p->lastInput > 0 ? p->lastInput + 1.0 / rate : 0;
+        while (CACurrentMediaTime() < due) {
+            double remaining = fmax(0, due - CACurrentMediaTime());
+            SInt32 result = CFRunLoopRunInMode((CFStringRef)MCDisplayMode, remaining, true);
+            if (result == kCFRunLoopRunFinished) [NSThread sleepForTimeInterval:remaining];
+        }
+    }
+    // Duration policies cap presentation itself. No second CPU/callback limiter.
+    waitForQueue(p, rate);
+    double gpuAverage;
+    @synchronized(p->stats) { gpuAverage = p->stats->feedback.gpuAverage; }
+    NSScreen *screen = window.screen;
+    BOOL eligible = (window.styleMask & NSWindowStyleMaskFullScreen) != 0
+        && screen.minimumRefreshInterval > 0
+        && screen.maximumRefreshInterval > screen.minimumRefreshInterval;
+    p->frame = [MCDisplayFrame new];
+    p->frame->stats = [p->stats retain];
+    p->frame->began = CACurrentMediaTime();
+    p->frame->minimumDuration = mc_present_duration(p->presentationMode, rate, gpuAverage,
+        screen.maximumRefreshInterval, eligible);
+    mc_presentation_mark("link.acquire.begin", p, 0);
+    p->frame->drawable = [[p->layer nextDrawable] retain];
+    mc_presentation_mark("link.acquire.end", p, p->frame->drawable != nil);
+    if (!p->frame->drawable) { [p->frame release]; p->frame = nil; return 0; }
+    p->lastInput = p->frame->inputReady = CACurrentMediaTime();
+    return 1;
 }
 
 int mc_display_link_begin(void *handle, int cap) {
@@ -274,11 +369,18 @@ int mc_display_link_begin(void *handle, int cap) {
             p->requestedRate = rate;
             p->callbackRate = callbackRate;
             mc_pacing_reset(&p->pacing);
+            p->lastInput = 0;
             p->callbackAt = 0; // require a callback after changing the requested range
             if (p->logging) NSLog(@"[mcopt] display link: cap %d Hz, callbacks requested %d Hz", rate, callbackRate);
         }
         mc_presentation_mark("link.resume.begin", p, rate);
         p->link.paused = NO;
+        if (p->presentationMode != MC_PRESENT_CLOCK) {
+            int ready = beginPresentation(p, rate);
+            if (!ready) { @synchronized(p->stats) { p->stats->timeouts++; } }
+            report(p);
+            return ready;
+        }
         mc_presentation_mark("link.wait.begin", p, rate);
         p->waiting = YES;
         double stop = CACurrentMediaTime() + 0.050;
@@ -349,14 +451,22 @@ void mc_display_link_prepare(id object, id<MTLCommandBuffer> cb) {
     f->commandBuffer = [cb retain];
     MCDisplayStats *s = f->stats; // retained by the copied blocks until GPU/display completes
     double began = f->began;
-    [cb presentDrawable:f->drawable]; // same VSync scheduling as legacy; no display-link presentation target
+    uint64_t sequence;
+    @synchronized(s) { sequence = mc_present_record(&s->feedback, CACurrentMediaTime()); }
+    if (f->minimumDuration > 0) [cb presentDrawable:f->drawable afterMinimumDuration:f->minimumDuration];
+    else [cb presentDrawable:f->drawable];
     [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
-        if (done.status == MTLCommandBufferStatusError) { @synchronized(s) { s->gpuErrors++; } }
+        @synchronized(s) {
+            BOOL failed = done.status == MTLCommandBufferStatusError;
+            if (failed) s->gpuErrors++;
+            mc_present_completed(&s->feedback, sequence, CACurrentMediaTime(), done.GPUEndTime - done.GPUStartTime, failed);
+        }
     }];
     [f->drawable addPresentedHandler:^(id<MTLDrawable> d) {
         double shown = d.presentedTime;
         @synchronized(s) {
             if (!(shown > 0)) { s->unavailable++; return; }
+            mc_present_shown(&s->feedback, sequence, shown);
             s->samples++;
             s->latencySum += fmax(0, shown - began);
             if (s->lastPresented > 0 && shown > s->lastPresented) {
@@ -374,7 +484,7 @@ void mc_display_link_present(id object) {
     MCDisplayFrame *f = object;
     // Presentation was scheduled on the command buffer in prepare(). Mark submission
     // separately so a pre-commit disable cannot retire an encoded drawable too early.
-    if (CACurrentMediaTime() > f->deadline) { @synchronized(f->stats) { f->stats->deadlines++; } }
+    if (f->deadline > 0 && CACurrentMediaTime() > f->deadline) { @synchronized(f->stats) { f->stats->deadlines++; } }
     mc_presentation_mark("link.present.scheduled", f->commandBuffer, 0);
     f->presented = YES;
 }

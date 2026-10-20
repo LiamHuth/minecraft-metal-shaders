@@ -117,6 +117,7 @@ final class Native {
 	private static final MethodHandle PRESENT_DROPPED = fn("mc_present_dropped", false, JAVA_LONG);
 	private static final MethodHandle DISPLAY_LINK_CREATE = fn("mc_display_link_create", false, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT);
 	private static final MethodHandle DISPLAY_LINK_BEGIN = fn("mc_display_link_begin", false, JAVA_INT, JAVA_LONG, JAVA_INT);
+	private static final MethodHandle DISPLAY_LINK_CONFIGURE = fn("mc_display_link_configure", false, null, JAVA_LONG, JAVA_INT, JAVA_INT);
 	private static final MethodHandle DISPLAY_LINK_CLOSE = fn("mc_display_link_close", false, JAVA_INT, JAVA_LONG);
 	private static final MethodHandle PRESENT_DISPLAY_LINK = fn("mc_present_display_link", false, null, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle PRESENT_DRAIN = fn("mc_present_drain", false, null);
@@ -257,6 +258,7 @@ final class Native {
 	}
 	static long displayLinkCreate(long layer, int latency, int log) { try { return (long) DISPLAY_LINK_CREATE.invokeExact(layer, latency, log); } catch (Throwable t) { throw rethrow(t); } }
 	static boolean displayLinkBegin(long link, int fps) { try { return (int) DISPLAY_LINK_BEGIN.invokeExact(link, fps) != 0; } catch (Throwable t) { throw rethrow(t); } }
+	static void displayLinkConfigure(long link, int mode, int queue) { try { DISPLAY_LINK_CONFIGURE.invokeExact(link, mode, queue); } catch (Throwable t) { throw rethrow(t); } }
 	static boolean displayLinkClose(long link) { try { return (int) DISPLAY_LINK_CLOSE.invokeExact(link) != 0; } catch (Throwable t) { throw rethrow(t); } }
 	static void presentDisplayLink(long enc, long link, long texture, long cadence) { if (FrameCapture.FULL && FrameCapture.active()) FrameCapture.present(texture); try { PRESENT_DISPLAY_LINK.invokeExact(enc, link, texture, cadence); } catch (Throwable t) { throw rethrow(t); } }
 	static void presentDrain() { try { PRESENT_DRAIN.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }

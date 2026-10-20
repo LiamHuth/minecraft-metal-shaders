@@ -127,6 +127,7 @@ final class MetalSurface implements GpuSurfaceBackend {
 			return false;
 		}
 		long start = WaitStats.ON ? System.nanoTime() : 0;
+		Native.displayLinkConfigure(this.displayLink, DisplayLink.presentationMode(), DisplayLink.queueLimit());
 		this.linkReady = Native.displayLinkBegin(this.displayLink, fps);
 		this.linkStatus = this.linkReady ? DisplayLink.Status.ACTIVE : DisplayLink.Status.WAITING;
 		if (WaitStats.ON) WaitStats.wait(WaitStats.PACE, System.nanoTime() - start, 0);

@@ -14,6 +14,7 @@ parser.add_argument("jar", type=Path)
 parser.add_argument("--output", type=Path, required=True)
 parser.add_argument("--java-home", type=Path, required=True)
 parser.add_argument("--prepare-only", action="store_true")
+parser.add_argument("--suite", choices=["clock", "presentation"], default="clock")
 opts = parser.parse_args()
 jar = opts.jar.resolve()
 output = opts.output.resolve()
@@ -72,25 +73,28 @@ args = [
     "-Dmcopt.metal.gpuTimes=true", "-Dmcopt.metal.latency=true",
     f"-Dmcopt.bench.output={output / 'measurements.json'}",
     f"-Dmcopt.bench.loadLibrary={load_library}",
+    f"-Dmcopt.bench.suite={opts.suite}",
     "-classpath", ":".join(cp), "net.fabricmc.loader.impl.launch.knot.KnotClient",
     "--username", "PacingTest", "--uuid", "00000000-0000-0000-0000-000000000001",
     "--accessToken", "0", "--version", "26.3", "--gameDir", str(game),
     "--assetsDir", str(prism / "assets"), "--assetIndex", "34", "--width", "640", "--height", "400"]
-if opts.prepare_only:
-    print("Prepared without launching:", game)
-    raise SystemExit(0)
 (output / "manifest.json").write_text(json.dumps({
     "jar": str(jar), "sha256": hashlib.sha256(jar.read_bytes()).hexdigest(),
     "game": str(game), "args": args, "metalValidation": False,
-    "protocol": "Windowed HDR 1280x800; 50 FPS ABBA, 60 on/off, 120 off/on; 4s settle + 12s sample; variable GPU-load 120 FPS ABBA",
+    "suite": opts.suite,
+    "protocol": ("Windowed HDR; 50/60/120 light and 120 varying GPU load; legacy/ready/duration/duration+queue2/duration+queue3; reverse loaded repeat; 3s settle + 8s sample"
+        if opts.suite == "presentation" else "Windowed HDR 1280x800; 50 FPS ABBA, 60 on/off, 120 off/on; 4s settle + 12s sample; variable GPU-load 120 FPS ABBA"),
 }, indent=2) + "\n")
+if opts.prepare_only:
+    print("Prepared without launching:", game)
+    raise SystemExit(0)
 # Do not profile with the Metal validation layer; this is a cadence measurement.
 env = {k: v for k, v in os.environ.items() if not k.startswith("MTL_DEBUG")}
 with (output / "game.log").open("w") as log:
     process = subprocess.Popen(args, cwd=game, stdout=log, stderr=subprocess.STDOUT, env=env)
     (output / "game-pid").write_text(str(process.pid))
     try:
-        code = process.wait(timeout=330)
+        code = process.wait(timeout=480 if opts.suite == "presentation" else 330)
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait(timeout=5)

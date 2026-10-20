@@ -49,6 +49,8 @@ for name, phase in data["phases"].items():
     row = result[name] = {
         "cap": phase["cap"], "enabled": phase["enabled"],
         "variableGpuLoad": phase.get("variableGpuLoad", False),
+        "presentationPolicy": phase.get("presentationPolicy", "clock"),
+        "queueLimit": phase.get("queueLimit", 0),
         "validContext": phase["fullscreenFrames"] == 0 and phase["unfocusedFrames"] == 0
             and phase["states"] == {expected: phase["frames"]} and phase["hdr"]
             and phase.get("actualCaps") == {str(phase["cap"]): phase["frames"]},
@@ -72,7 +74,7 @@ for name, phase in data["phases"].items():
     row["validForComparison"] = (row["validContext"] and len(intervals) >= 10
         and row["missingPresentationTimestamps"] == 0 and duplicate_times == 0
         and len(latency) == len(shown) and gpu["dropped"] == 0)
-    print(f"{name:14} context={row['validContext']} comparison={row['validForComparison']} shown={len(shown)} "
+    print(f"{name:14} {row['presentationPolicy']} queue={row['queueLimit']} context={row['validContext']} comparison={row['validForComparison']} shown={len(shown)} "
           f"FPS={fmt(row['displayedFps'])} interval mean/p95={fmt(row['intervalMs']['mean'])}/{fmt(row['intervalMs']['p95'])}ms "
           f"jitter SD={fmt(row['intervalMs']['stddev'])}ms "
           f"poll->shown median/p95={fmt(row['pollToPresentationMs']['p50'])}/{fmt(row['pollToPresentationMs']['p95'])}ms "

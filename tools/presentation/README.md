@@ -206,3 +206,71 @@ It exercises average caps at 50/60/90/120 FPS, changing work duration, stalls, r
 The built-in screen reported minimum/maximum intervals of 8.333/41.667 ms (120/24 Hz) and update granularity of 4.167 ms. The observed callback interval remained 8.333 ms. These are OS capability and callback measurements, not proof of the panel's instantaneous refresh or a G-Sync-equivalent presentation path. VSync stayed enabled, but tearing and physical input latency were not measured. Fullscreen was not tested.
 
 Next investigation should isolate presentation/backpressure from the render-start clock, and account for the missing baseline notifications before making an under-load claim. A fixed phase offset from a display callback and a recent rendering budget are insufficient to predict this compositor's presentation decisions. Actual presentation feedback may help; the present callback cannot become an unbounded gate because notification coverage is incomplete.
+
+
+## Independent presentation/queue experiment (`promotion.9-diagnostic`)
+
+This checkpoint tests presentation scheduling separately from the old callback-grid limiter. It is experimental and does not yet meet the combined throughput, pacing and latency goals. VSync, the normal three-drawable pool, pre-input drawable acquisition and GPU-safe retirement are preserved. No Prism instance is modified by the benchmark.
+
+With `-Dmcopt.metal.displayLink=true`, choose a policy using
+`-Dmcopt.metal.displayLink.presentation=clock|ready|duration|adaptive`:
+
+- `clock`: the previous render-budget experiment.
+- `ready`: an elapsed-time CPU cap before polling input, followed by ordinary presentation; no callback-grid alignment.
+- `duration` (this diagnostic's default): Metal's `presentDrawable:afterMinimumDuration:` controls the presentation cap, with no additional CPU or callback-grid limiter.
+- `adaptive`: the duration policy with a smoothed GPU-duration estimate and 5% margin. Learning applies only when the window has the native fullscreen style and the screen reports differing minimum/maximum refresh intervals. The learned duration is bounded by the screen's maximum interval; the user's cap still applies. These checks do not confirm that physical VRR is active.
+
+`-Dmcopt.metal.displayLink.queue=0|1|2|3` independently controls the pending-frame hint for the three new policies. Zero disables it and is the default. The receipt ring distinguishes unfinished GPU work from completed images awaiting presentation. A newer confirmed presentation can supersede an older completed image with a missing notification. It never substitutes for resource fences or invents a missing measurement. Waits are capped at 25–50 ms, followed by a one-second cooldown on timeout. GPU time, not compositor queue delay, feeds the adaptive estimate.
+
+### Validation and Minecraft results
+
+The offline build, existing timing-policy regression and new receipt/presentation-policy regression passed. Windowed native validation passed SDR/HDR pixel checks, rate ceilings, resizing, hide/restore, run-loop-dependent GPU completion and 24 delayed/uncommitted transitions. Duration policies are checked against actual presentation timestamps: submission throughput alone is not their rate limit. The queue-two validation delivered below the requested maximum rates; passing the correctness checks is not a performance endorsement.
+
+Minecraft ran 25 focused, windowed HDR phases at 1280×800 on the built-in 120 Hz display with VSync enabled. Each phase used three seconds settling and eight seconds measurement. The five configurations were legacy, ready, duration, duration with queue two, and duration with queue three. Caps were 50, 60 and 120 FPS in a light scene, then 120 FPS with varying GPU work in both forward and reverse policy order. The workload sequence changes every 24 rendered frames, so its wall-clock timing is not identical between configurations. No GPU recorder slots were dropped. The process exited normally without a freeze.
+
+JAR SHA-256: `610b42d2bc0a049c598afaa19d434751d11a18d47253c7234dc889bdc9a6ab2e`.
+
+| Case / policy | Displayed FPS | Interval p95 | Median poll-to-presentation |
+| --- | ---: | ---: | ---: |
+| 50, legacy | 49.94 | 25.00 ms | 28.71 ms |
+| 50, duration | 40.00 | 25.00 ms | 65.72 ms |
+| 50, duration + queue two | 39.92 | 25.00 ms | 48.65 ms |
+| 60, legacy | 59.87 | 16.67 ms | 28.71 ms |
+| 60, duration | 60.00 | 16.67 ms | 49.12 ms |
+| 60, duration + queue two | 59.94 | 16.67 ms | 32.01 ms |
+| 120 light, legacy | 119.50 | 8.33 ms | 30.27 ms |
+| 120 light, ready | 115.11 | 8.34 ms | 26.50 ms |
+| 120 light, duration | 120.00 | 8.33 ms | 32.48 ms |
+| 120 light, duration + queue two | 69.09 | 25.00 ms | 23.73 ms |
+| 120 light, duration + queue three | 108.33 | 16.67 ms | 23.74 ms |
+| 120 loaded, legacy, observed only* | 94.57–95.52 | 16.67 ms | 40.79–43.97 ms |
+| 120 loaded, duration | 90.20–91.90 | 16.67 ms | 32.48–32.53 ms |
+| 120 loaded, duration + queue three | 86.19–86.36 | 16.67 ms | 32.04–32.05 ms |
+
+*Loaded legacy phases were missing presentation notifications for 6/762 and 4/768 submitted frames. The analyzer rejects those phases as fully valid comparisons; values use observed timestamps only. All other phases had complete unique timestamps and valid focus/cap/state/HDR context. Latency here is a software timing estimate, not physical input-to-photon latency or proof of tear-free scanout.
+
+At 50 FPS, minimum-duration presentation consistently held images for 25 ms instead of the requested 20 ms, producing 40 FPS. That is consistent with rounding up to the observed 8.33 ms presentation grid. At 60 FPS, duration reduced interval standard deviation from 2.47 ms to approximately zero but increased median software latency by 20.41 ms. Queue two recovered most of that delay at 60 FPS but severely reduced 120 FPS throughput. Queue three also traded throughput for latency. No tested windowed configuration improves all three goals together.
+
+To reproduce headless policy checks:
+
+```sh
+clang -O2 -Wall -Wextra -Werror -I metal/src/main/native \
+  tools/presentation/presentpolicycheck.c -o /tmp/mcopt-presentpolicycheck
+/tmp/mcopt-presentpolicycheck
+```
+
+The Minecraft runner accepts `--suite presentation` for this matrix; `--suite clock` retains the older comparison. `pacing-analyze.py` writes `summary.json` and fails when measurement coverage or context is invalid. Native validation accepts `MCOPT_NATIVE_DIR` to use the same isolated build, and `MCOPT_PRESENT_POLICY` / `MCOPT_PRESENT_QUEUE` to select the policy.
+
+### Prepared fullscreen probe
+
+`adaptive-probe.m` isolates ready/duration/adaptive presentation in a small native renderer. It enters fullscreen before creating a layer or display link, keeps HDR and VSync fixed, and uses time-based varying GPU work. It does not test live fullscreen/HDR switching, and its process watchdog cannot guarantee recovery from a WindowServer/GPU hang. Run it only with an agreed focused test window. Its analyzer checks timestamp coverage, duplicates, timing order and focus; the exported screen capabilities do not prove physical VRR. Native probe results are separate from Minecraft results.
+
+```sh
+clang -fno-objc-arc -O2 -Wall -mmacosx-version-min=15.0 \
+  -I metal/src/main/native -framework AppKit -framework Metal -framework QuartzCore \
+  -L "$MCOPT_NATIVE_DIR" -lmcmetal -Wl,-rpath,"$MCOPT_NATIVE_DIR" \
+  tools/presentation/adaptive-probe.m tools/presentation/load.m -o /tmp/mcopt-adaptive-probe
+/tmp/mcopt-adaptive-probe windowed /tmp/probe-windowed.json
+/tmp/mcopt-adaptive-probe fullscreen /tmp/probe-fullscreen.json
+python3 tools/presentation/adaptive-probe-analyze.py /tmp/probe-fullscreen.json
+```

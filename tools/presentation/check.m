@@ -6,6 +6,18 @@
 #import "mcpresentationtrace.h"
 #include <assert.h>
 #include <unistd.h>
+static void configurePolicy(void *link) {
+    const char *mode = getenv("MCOPT_PRESENT_POLICY"), *queue = getenv("MCOPT_PRESENT_QUEUE");
+    mc_display_link_configure(link, mode ? atoi(mode) : 0, queue ? atoi(queue) : 0);
+}
+@interface ValidationCadence : NSObject {
+@public
+    double first[3], last[3];
+    unsigned shown[3];
+}
+@end
+@implementation ValidationCadence
+@end
 Ctx *mc_create(char *, int, char *, int);
 Enc *mc_enc_new(Ctx *);
 void mc_layer_configure(Ctx *, CAMetalLayer *, int, int, int);
@@ -42,6 +54,7 @@ static void completed(id<MTLCommandBuffer> cb) {
 static void transitionCheck(Ctx *ctx, Enc *enc, CAMetalLayer *layer, id<MTLTexture> src) {
     for (int i=0; i<12; i++) { @autoreleasepool {
         void *link = mc_display_link_create(layer,1,0);
+        configurePolicy(link);
         require(link && mc_display_link_begin(link,120),"transition acquired drawable");
         id<MTLSharedEvent> gate = [ctx->device newSharedEvent];
         id<MTLCommandBuffer> cb = mc_frame_cmd(enc);
@@ -67,6 +80,7 @@ static void transitionCheck(Ctx *ctx, Enc *enc, CAMetalLayer *layer, id<MTLTextu
         done = mc_enc_commit(enc); completed(done); [done release];
     } }
     void *link = mc_display_link_create(layer,1,0);
+    configurePolicy(link);
     require(link && mc_display_link_begin(link,120),"acquired unused drawable");
     require(mc_display_link_close(link),"unused drawable can be discarded without GPU work");
     puts("PASS: 12 delayed-GPU and uncommitted transitions, legacy restart, unused drawable");
@@ -79,6 +93,7 @@ static void transitionCheck(Ctx *ctx, Enc *enc, CAMetalLayer *layer, id<MTLTextu
 static void runLoopFenceCheck(Ctx *ctx, Enc *enc, CAMetalLayer *layer, id<MTLTexture> src) {
     for (int phase = 0; phase < 3; phase++) { @autoreleasepool {
         void *link = mc_display_link_create(layer,1,0);
+        configurePolicy(link);
         require(link && mc_display_link_begin(link,120),"run-loop fence acquired drawable");
         id<MTLSharedEvent> gate = [ctx->device newSharedEvent];
         [mc_frame_cmd(enc) encodeWaitForEvent:gate value:1];
@@ -130,10 +145,13 @@ int main(int argc, const char **argv) { @autoreleasepool {
     Enc *enc = mc_enc_new(ctx);
     [window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; events();
     for (int mode = 0; mode < 2; mode++) {
+        ValidationCadence *cadence = [ValidationCadence new];
+        BOOL presentationLimited = getenv("MCOPT_PRESENT_POLICY") && atoi(getenv("MCOPT_PRESENT_POLICY")) >= 2;
         mc_xdr_enable(mode);
         mc_layer_configure(ctx,layer,480,300,1);
         layer.framebufferOnly = NO; // read back the actual presented drawable to verify colour
         void *link = mc_display_link_create(layer,argc > 1 ? atoi(argv[1]) : 1,1);
+        configurePolicy(link);
         require(link != NULL,"create display link");
         require(layer.displaySyncEnabled && layer.maximumDrawableCount == 3,"paced VSync preserves drawable count");
         MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:480 height:300 mipmapped:NO];
@@ -151,7 +169,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
                 int frames = i==1320 ? 1320 : 120;
                 int request = i==1320 ? 120 : 60;
                 int ceiling = MIN(request,(int)window.screen.maximumFramesPerSecond);
-                require(CACurrentMediaTime()-phaseStart >= frames/(double)ceiling*.97,"120/60 FPS average cap respected");
+                if (!presentationLimited) require(CACurrentMediaTime()-phaseStart >= frames/(double)ceiling*.97,"120/60 FPS average cap respected");
                 phaseStart=CACurrentMediaTime();
             }
             int cap = i < 1320 ? 120 : i < 1440 ? 60 : 90;
@@ -162,6 +180,17 @@ int main(int argc, const char **argv) { @autoreleasepool {
             callbacks++;
             id<CAMetalDrawable> drawable = mc_display_link_drawable(link);
             require(drawable != nil,"update contains drawable");
+            int phase = cap == 120 ? 0 : cap == 60 ? 1 : 2;
+            [drawable addPresentedHandler:^(id<MTLDrawable> d) {
+                @synchronized(cadence) {
+                    double at = d.presentedTime;
+                    if (at > cadence->last[phase]) {
+                        if (!cadence->first[phase]) cadence->first[phase] = at;
+                        cadence->last[phase] = at;
+                        cadence->shown[phase]++;
+                    }
+                }
+            }];
             id<MTLCommandBuffer> cb = mc_frame_cmd(enc);
             MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
             rp.colorAttachments[0].texture = src;
@@ -197,6 +226,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
                 mc_layer_configure(ctx,layer,480,300,1);
                 layer.framebufferOnly = NO;
                 link = mc_display_link_create(layer,argc > 1 ? atoi(argv[1]) : 1,1);
+                configurePolicy(link);
             }
             if (i==1400) { // hide, bound wait, restore
                 mc_display_link_pause(link);
@@ -208,7 +238,16 @@ int main(int argc, const char **argv) { @autoreleasepool {
                 [window orderFront:nil]; events();
             }
         } }
-        require(CACurrentMediaTime()-phaseStart >= 120.0/MIN(90,(int)window.screen.maximumFramesPerSecond)*.97,"90 FPS average cap respected");
+        if (!presentationLimited) require(CACurrentMediaTime()-phaseStart >= 120.0/MIN(90,(int)window.screen.maximumFramesPerSecond)*.97,"90 FPS average cap respected");
+        if (presentationLimited) { @synchronized(cadence) {
+            int caps[] = {120,60,90};
+            for (int phase = 0; phase < 3; phase++) {
+                require(cadence->shown[phase] >= 50,"enough actual presentation timestamps to check cap");
+                double fps = (cadence->shown[phase]-1)/(cadence->last[phase]-cadence->first[phase]);
+                fprintf(stdout,"Presented cap %d: %.2f FPS (%u timestamps)\n",caps[phase],fps,cadence->shown[phase]);
+                require(fps <= caps[phase]*1.03,"minimum-duration cap respected by actual presentation");
+            }
+        } }
         fprintf(stdout,"PASS %s: %d callbacks in %.2f s; caps 120/60/90, resize, hide/restore, late frame, pixels\n",mode?"HDR":"SDR",callbacks,CACurrentMediaTime()-start);
         require(callbacks>1500,"callbacks actually arrived");
         closeLink(link);
@@ -216,6 +255,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
         runLoopFenceCheck(ctx,enc,layer,src);
         transitionCheck(ctx,enc,layer,src);
         [readback release]; [src release]; [hdr release];
+        [cadence release];
     }
     [window close]; [window release];
     puts("PASS: display-link teardown/recreate and live GPU tests");

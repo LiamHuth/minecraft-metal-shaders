@@ -9,6 +9,16 @@ public final class DisplayLink {
 		Status(String suffix) { this.messageKey = "message.mcopt.promotion_" + suffix; }
 	}
 	public static final String KEY = "mcopt.metal.displayLink";
+	/** Experimental controls can change at a frame boundary without recreating the layer. */
+	static int presentationMode() {
+		return switch (System.getProperty(KEY + ".presentation", "duration")) {
+			case "clock" -> 0;
+			case "ready" -> 1;
+			case "adaptive" -> 3;
+			default -> 2;
+		};
+	}
+	static int queueLimit() { return Math.clamp(Integer.getInteger(KEY + ".queue", 0), 0, 3); }
 	// Reserved native ABI argument; CADisplayLink does not impose a presentation-latency budget.
 	static final int LATENCY = 0;
 	static final boolean LOG = Boolean.parseBoolean(System.getProperty("mcopt.metal.displayLink.log", "true"));
@@ -36,7 +46,7 @@ public final class DisplayLink {
 			trace("session version=" + net.fabricmc.loader.api.FabricLoader.getInstance().getModContainer("mcopt-metal")
 					.map(mod -> mod.getMetadata().getVersion().getFriendlyString()).orElse("unknown")
 				+ " os=" + System.getProperty("os.version") + " java=" + System.getProperty("java.version")
-				+ " enabled=" + enabled() + " pacer=CADisplayLink-render-budget");
+				+ " enabled=" + enabled() + " presentation=" + presentationMode() + " queue=" + queueLimit());
 			System.out.println("[mcopt] presentation diagnostics: " + path);
 		} catch (java.io.IOException e) {
 			System.err.println("[mcopt] could not open presentation diagnostics: " + e.getMessage());

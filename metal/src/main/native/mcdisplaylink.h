@@ -10,8 +10,11 @@ int mc_display_link_close(void *handle);
 // retirement/shutdown. Falls back to the ordinary wait when this thread owns no links.
 void mc_display_link_wait_for_command(id<MTLCommandBuffer> commandBuffer);
 void mc_display_link_pause(void *handle);
+// Live experimental policy: 0=previous clock, 1=ready, 2=minimum duration,
+// 3=GPU-adaptive duration when fullscreen VRR is eligible. queueLimit: 0=off, 1..3.
+void mc_display_link_configure(void *handle, int presentationMode, int queueLimit);
 int mc_display_link_begin(void *handle, int cap);
 id<CAMetalDrawable> mc_display_link_drawable(void *handle); // borrowed until take/pause
 id mc_display_link_take(void *handle); // transfers ownership to the frame's command buffer
 void mc_display_link_prepare(id frame, id<MTLCommandBuffer> commandBuffer); // before commit
-void mc_display_link_present(id frame); // after commit, before targetTimestamp
+void mc_display_link_present(id frame); // after commit
