@@ -36,7 +36,7 @@ public final class DisplayLink {
 			trace("session version=" + net.fabricmc.loader.api.FabricLoader.getInstance().getModContainer("mcopt-metal")
 					.map(mod -> mod.getMetadata().getVersion().getFriendlyString()).orElse("unknown")
 				+ " os=" + System.getProperty("os.version") + " java=" + System.getProperty("java.version")
-				+ " enabled=" + enabled() + " pacer=CADisplayLink");
+				+ " enabled=" + enabled() + " pacer=CADisplayLink-render-budget");
 			System.out.println("[mcopt] presentation diagnostics: " + path);
 		} catch (java.io.IOException e) {
 			System.err.println("[mcopt] could not open presentation diagnostics: " + e.getMessage());

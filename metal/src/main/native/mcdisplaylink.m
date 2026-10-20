@@ -1,5 +1,5 @@
-// Display-driven pacing before SDL input polling. CADisplayLink follows the window while
-// ordinary VSync drawables retain the legacy presentation latency. CAMetalDisplayLink
+// Render-budget pacing before SDL input polling. CADisplayLink follows the window while
+// ordinary VSync drawables use the legacy presentation API. CAMetalDisplayLink
 // assigned drawables a target 33 ms after their submission deadline on our macOS test rig.
 // Missing callbacks have a bounded wait; retirement continues servicing this private mode.
 #import "mcdisplaylink.h"
@@ -8,6 +8,7 @@
 #import <AppKit/AppKit.h>
 #include <math.h>
 #import "mcpresentationtrace.h"
+#include "mcpacing.h"
 
 static NSString *const MCDisplayMode = @"mcopt.display-link";
 // Lifecycle and renderer fences share the render thread. Track registrations rather than
@@ -17,7 +18,7 @@ static _Thread_local unsigned int registeredLinks;
 static void serviceDisplayLoop(void) {
     @autoreleasepool {
         // Do not dispatch SDL input or re-enter the game while it is retiring resources.
-        // Delegate calls outside begin() discard updates instead of acquiring more frames.
+        // Delegate calls only update the clock; they never acquire more frames.
         SInt32 result = CFRunLoopRunInMode((CFStringRef)MCDisplayMode, 0.001, true);
         if (result == kCFRunLoopRunFinished) [NSThread sleepForTimeInterval:0.001];
     }
@@ -60,7 +61,7 @@ void mc_display_link_wait_for_command(id<MTLCommandBuffer> commandBuffer) {
     id<CAMetalDrawable> drawable;
     id<MTLCommandBuffer> commandBuffer;
     MCDisplayStats *stats;
-    double began, deadline;
+    double began, deadline, inputReady;
     BOOL presented;
 }
 @end
@@ -77,25 +78,23 @@ void mc_display_link_wait_for_command(id<MTLCommandBuffer> commandBuffer) {
     MCDisplayStats *stats;
     NSMutableArray<MCDisplayFrame *> *inFlight;
     int requestedRate, callbackRate, logging;
-    double nextPresentation;
+    double callbackTarget, callbackInterval, callbackAt;
+    MCPacing pacing;
+    unsigned long alignedFrames, unalignedFrames;
     BOOL waiting, retiring;
 }
 @end
 @implementation MCDisplayLink
 - (void)tick:(CADisplayLink *)sender {
     mc_presentation_mark("link.callback", self, waiting);
-    if (!waiting || frame) return;
-    // Always request the screen's finest cadence. A 50 Hz request can be rounded to
-    // 60 Hz, forcing 16.7/33.3 ms intervals instead of 16.7/25 ms on a 120 Hz panel.
-    // Drop missed deadlines, never render a burst of catch-up frames.
-    double t = sender.targetTimestamp, period = 1.0 / MAX(1, requestedRate);
-    if (nextPresentation > 0 && t + 0.0001 < nextPresentation) return;
-    nextPresentation = nextPresentation == 0 || t - nextPresentation > period ? t + period : nextPresentation + period;
-    frame = [MCDisplayFrame new];
-    frame->stats = [stats retain];
-    frame->began = CACurrentMediaTime();
-    frame->deadline = t;
-    CFRunLoopStop(runLoop.getCFRunLoop);
+    double target = sender.targetTimestamp, interval = target - sender.timestamp;
+    if (!isfinite(target) || !isfinite(interval) || interval <= 0 || interval > .100) return;
+    callbackTarget = target;
+    callbackInterval = interval;
+    callbackAt = CACurrentMediaTime();
+    // Keep the clock current during resource fences too. This callback never
+    // acquires a drawable or starts rendering; begin() controls both.
+    if (waiting) CFRunLoopStop(runLoop.getCFRunLoop);
 }
 - (void)dealloc {
     [link invalidate];
@@ -131,10 +130,12 @@ void *mc_display_link_create(CAMetalLayer *layer, int unusedLatency, int log) {
             if ([NSThread isMainThread]) for (CALayer *l = layer; l; l = l.superlayer) {
                 if ([l.delegate isKindOfClass:[NSView class]]) { window = ((NSView *)l.delegate).window; break; }
             }
-            mc_presentation_checkpoint([NSString stringWithFormat:@"link.context layer=%p size=%.0fx%.0f format=%lu sync=%d drawables=%lu edr=%d main=%d screen=%@ maxHz=%ld fullscreenStyle=%d windowFrame=%@ screenFrame=%@",
+            mc_presentation_checkpoint([NSString stringWithFormat:@"link.context layer=%p size=%.0fx%.0f format=%lu sync=%d drawables=%lu edr=%d main=%d screen=%@ maxHz=%ld minRefreshMs=%.3f maxRefreshMs=%.3f granularityMs=%.3f fullscreenStyle=%d windowFrame=%@ screenFrame=%@",
                 layer, layer.drawableSize.width, layer.drawableSize.height, (unsigned long)layer.pixelFormat,
                 layer.displaySyncEnabled, (unsigned long)layer.maximumDrawableCount, layer.wantsExtendedDynamicRangeContent,
                 [NSThread isMainThread], window.screen.deviceDescription[@"NSScreenNumber"], (long)window.screen.maximumFramesPerSecond,
+                window.screen.minimumRefreshInterval * 1000, window.screen.maximumRefreshInterval * 1000,
+                window.screen.displayUpdateGranularity * 1000,
                 (window.styleMask & NSWindowStyleMaskFullScreen) != 0, NSStringFromRect(window.frame), NSStringFromRect(window.screen.frame)]);
         }
         MCDisplayLink *p = [MCDisplayLink new];
@@ -158,7 +159,7 @@ void *mc_display_link_create(CAMetalLayer *layer, int unusedLatency, int log) {
         [p->link addToRunLoop:p->runLoop forMode:MCDisplayMode];
         registeredLinks++;
         mc_presentation_trace_note("link.create.end");
-        NSLog(@"[mcopt] CADisplayLink pacing enabled (VSync, ordinary drawable pool); VSync off uses legacy pacing");
+        NSLog(@"[mcopt] render-budget pacing enabled (CADisplayLink clock, VSync, ordinary drawable pool)");
         return p;
     } }
     return NULL;
@@ -168,7 +169,8 @@ void mc_display_link_pause(void *handle) {
     MCDisplayLink *p = handle;
     if (!p) return;
     p->waiting = NO;
-    p->nextPresentation = 0;
+    p->callbackTarget = p->callbackInterval = p->callbackAt = 0;
+    mc_pacing_reset(&p->pacing);
     mc_presentation_mark("link.pause.begin", p, 0);
     p->link.paused = YES;
     mc_presentation_mark("link.pause.end", p, 0);
@@ -182,8 +184,11 @@ void mc_display_link_pause(void *handle) {
 static void retireFrames(MCDisplayLink *p) {
     for (NSInteger i = (NSInteger)p->inFlight.count - 1; i >= 0; i--) {
         MCDisplayFrame *f = p->inFlight[i];
-        if (f->presented && f->commandBuffer && f->commandBuffer.status >= MTLCommandBufferStatusCompleted)
+        if (f->presented && f->commandBuffer && f->commandBuffer.status >= MTLCommandBufferStatusCompleted) {
+            if (f->commandBuffer.status == MTLCommandBufferStatusCompleted && f->inputReady > 0)
+                mc_pacing_sample(&p->pacing, f->commandBuffer.GPUEndTime - f->inputReady);
             [p->inFlight removeObjectAtIndex:i];
+        }
     }
 }
 
@@ -241,7 +246,7 @@ static void report(MCDisplayLink *p) {
         unsigned long n = 0, goal = (s->intervals * 95 + 99) / 100;
         double p95 = 0;
         for (int i = 0; i < 256 && n < goal; i++) { n += s->histogram[i]; p95 = (i + 1) * 0.5; }
-        NSLog(@"[mcopt] display link: request %d Hz, shown %lu, interval avg/p95 %.2f/%.2f ms, callback-to-display %.2f ms, commits after callback target %lu, no drawable %lu, no timestamp %lu, GPU errors %lu",
+        NSLog(@"[mcopt] display link: request %d Hz, shown %lu, interval avg/p95 %.2f/%.2f ms, start-to-display %.2f ms, commits after estimated finish %lu, no drawable %lu, no timestamp %lu, GPU errors %lu",
             p->requestedRate, s->samples, s->intervals ? s->intervalSum * 1000 / s->intervals : 0, p95,
             s->samples ? s->latencySum * 1000 / s->samples : 0, s->deadlines, s->timeouts, s->unavailable, s->gpuErrors);
         s->samples = s->intervals = s->deadlines = s->timeouts = s->unavailable = s->gpuErrors = 0;
@@ -249,6 +254,9 @@ static void report(MCDisplayLink *p) {
         memset(s->histogram, 0, sizeof(s->histogram));
         s->lastReport = now;
     }
+    NSLog(@"[mcopt] frame budget: %.2f ms, callback interval %.2f ms, aligned %lu, without extra tick %lu",
+        p->pacing.budget * 1000, p->callbackInterval * 1000, p->alignedFrames, p->unalignedFrames);
+    p->alignedFrames = p->unalignedFrames = 0;
 }
 
 int mc_display_link_begin(void *handle, int cap) {
@@ -265,7 +273,8 @@ int mc_display_link_begin(void *handle, int cap) {
             p->link.preferredFrameRateRange = CAFrameRateRangeMake(callbackRate, callbackRate, callbackRate);
             p->requestedRate = rate;
             p->callbackRate = callbackRate;
-            p->nextPresentation = 0;
+            mc_pacing_reset(&p->pacing);
+            p->callbackAt = 0; // require a callback after changing the requested range
             if (p->logging) NSLog(@"[mcopt] display link: cap %d Hz, callbacks requested %d Hz", rate, callbackRate);
         }
         mc_presentation_mark("link.resume.begin", p, rate);
@@ -273,8 +282,33 @@ int mc_display_link_begin(void *handle, int cap) {
         mc_presentation_mark("link.wait.begin", p, rate);
         p->waiting = YES;
         double stop = CACurrentMediaTime() + 0.050;
-        while (!p->frame && CACurrentMediaTime() < stop) {
-            CFRunLoopRunInMode((CFStringRef)MCDisplayMode, fmax(0, stop - CACurrentMediaTime()), true);
+        // Deliver any pending callback without waiting for an extra display tick.
+        CFRunLoopRunInMode((CFStringRef)MCDisplayMode, 0, true);
+        while ((p->callbackAt <= 0 || CACurrentMediaTime() - p->callbackAt > .050) && CACurrentMediaTime() < stop) {
+            SInt32 result = CFRunLoopRunInMode((CFStringRef)MCDisplayMode, fmax(0, stop - CACurrentMediaTime()), true);
+            if (result == kCFRunLoopRunFinished) [NSThread sleepForTimeInterval:.001];
+        }
+        MCPacingPlan plan = {0};
+        if (p->callbackAt > 0 && CACurrentMediaTime() - p->callbackAt <= .050) {
+            plan = mc_pacing_plan(&p->pacing, CACurrentMediaTime(), rate, p->callbackTarget, p->callbackInterval);
+            double interval = p->callbackInterval;
+            // Sleep in the same private run-loop mode used by the lifecycle fixes.
+            // No polling SDL input, busy-spin, or unbounded wait for presented callbacks.
+            while (CACurrentMediaTime() < fmin(plan.wake, stop)) {
+                SInt32 result = CFRunLoopRunInMode((CFStringRef)MCDisplayMode,
+                    fmax(0, fmin(plan.wake, stop) - CACurrentMediaTime()), true);
+                if (result == kCFRunLoopRunFinished) [NSThread sleepForTimeInterval:.001];
+                if (fabs(p->callbackInterval - interval) > interval * .05) {
+                    interval = p->callbackInterval;
+                    plan = mc_pacing_plan(&p->pacing, CACurrentMediaTime(), rate, p->callbackTarget, interval);
+                }
+            }
+            if (CACurrentMediaTime() >= plan.wake && CACurrentMediaTime() - p->callbackAt <= .050) {
+                p->frame = [MCDisplayFrame new];
+                p->frame->stats = [p->stats retain];
+                p->frame->began = CACurrentMediaTime();
+                p->frame->deadline = plan.finish;
+            }
         }
         p->waiting = NO;
         if (p->frame) {
@@ -284,6 +318,11 @@ int mc_display_link_begin(void *handle, int cap) {
             p->frame->drawable = [[p->layer nextDrawable] retain];
             mc_presentation_mark("link.acquire.end", p, p->frame->drawable != nil);
             if (!p->frame->drawable) { [p->frame release]; p->frame = nil; }
+            else {
+                p->frame->inputReady = CACurrentMediaTime();
+                mc_pacing_started(&p->pacing, plan, p->frame->inputReady);
+                if (plan.clockAligned) p->alignedFrames++; else p->unalignedFrames++;
+            }
         }
         mc_presentation_mark("link.wait.end", p, p->frame != nil);
         if (!p->frame) { @synchronized(p->stats) { p->stats->timeouts++; } }
