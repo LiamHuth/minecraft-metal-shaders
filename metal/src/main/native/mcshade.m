@@ -478,7 +478,7 @@ void mc_shade_bake(Ctx *ctx, id<MTLRenderPipelineState> pso, id<MTLTexture> targ
 		[r drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
 		[r endEncoding];
 		[cb commit];
-		[cb waitUntilCompleted];
+		mc_cmd_wait(cb);
 	}
 }
 

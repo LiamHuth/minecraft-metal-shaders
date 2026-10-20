@@ -5,6 +5,8 @@ parser.add_argument("jar",type=Path)
 parser.add_argument("--output",type=Path,required=True)
 parser.add_argument("--java-home",type=Path,default=os.environ.get("JAVA_HOME"))
 parser.add_argument("--toggle",action="store_true",help="Exercise one live ProMotion on/off cycle; can reproduce the system-level hang")
+parser.add_argument("--mode",choices=["native","exclusive"],default="native",help="macOS native fullscreen (Spaces) matches the reported freeze")
+parser.add_argument("--prepare-only",action="store_true",help="Compile the helper and prepare an isolated profile without launching Minecraft")
 opts=parser.parse_args()
 opts.jar=opts.jar.resolve()
 root=opts.output.resolve();root.mkdir(parents=True,exist_ok=True)
@@ -39,6 +41,10 @@ with zipfile.ZipFile(game/'mods/pacing-smoke.jar','w') as z:
  z.writestr('fabric.mod.json',json.dumps({'schemaVersion':1,'id':'pacing-smoke','version':'1','environment':'client','entrypoints':{'client':['FullscreenSmoke']}}))
 args=[str(java/'java'),'-XstartOnFirstThread','-Xmx2G','--enable-native-access=ALL-UNNAMED','-Dmcopt.shade=true','-Dmcopt.shade.diag=false','-Dmixin.debug.export=true','-classpath',':'.join(cp),'net.fabricmc.loader.impl.launch.knot.KnotClient','--username','PacingTest','--uuid','00000000-0000-0000-0000-000000000001','--accessToken','0','--version','26.3','--gameDir',str(game),'--assetsDir',str(prism/'assets'),'--assetIndex','34','--width','640','--height','400']
 if opts.toggle: args.insert(1, '-Dmcopt.smoke.toggle=true')
+if opts.mode == 'exclusive': args.insert(1, '-Dmcopt.smoke.exclusive=true')
+if opts.prepare_only:
+ print('Prepared fullscreen helper without launching Minecraft:',game)
+ raise SystemExit(0)
 with (root/'fullscreen.log').open('w') as log:
  p=subprocess.Popen(args,cwd=game,stdout=log,stderr=subprocess.STDOUT,env={**os.environ,'MTL_DEBUG_LAYER':'1'})
  root.joinpath('game-pid').write_text(str(p.pid))
@@ -49,4 +55,7 @@ print('Smoke process exit',code,'at',game)
 for trace in (game/'logs').glob('mcopt-presentation-*.log'): shutil.copy2(trace,root/trace.name)
 if code: raise RuntimeError('Fullscreen test failed; inspect fullscreen.log and game-path/logs/mcopt-presentation-*.log')
 if 'FULLSCREEN_TEST PASS' not in (root/'fullscreen.log').read_text(): raise RuntimeError('Missing pass marker')
-print('Fullscreen test PASS; live toggle tested:',opts.toggle)
+if opts.toggle and opts.mode == 'native':
+ traces='\n'.join(p.read_text() for p in (game/'logs').glob('mcopt-presentation-*.log'))
+ if 'fullscreenStyle=1' not in traces: raise RuntimeError('Missing AppKit native-fullscreen evidence in link context')
+print('Fullscreen test PASS; mode:',opts.mode,'live toggle tested:',opts.toggle)

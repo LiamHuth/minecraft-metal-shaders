@@ -228,7 +228,7 @@ CloudState *mc_clouds_new(Ctx *ctx, const char *source, char *err, int errCap) {
 		[bl generateMipmapsForTexture:s->noise];
 		[bl endEncoding];
 		[cb commit];
-		[cb waitUntilCompleted];
+		mc_cmd_wait(cb);
 		if (cb.status != MTLCommandBufferStatusCompleted) {
 			snprintf(err, errCap, "clouds: noise bake failed (%s)", cb.error ? cb.error.localizedDescription.UTF8String : "?");
 			mc_clouds_free(s);

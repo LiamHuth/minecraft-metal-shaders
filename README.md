@@ -232,4 +232,4 @@ Es una versión alfa: haz respaldo de tus mundos.
 **Apoyar el proyecto:** es gratis y lo seguirá siendo. Si te gusta y quieres invitarme un café: [Ko-fi](https://ko-fi.com/gaelquintanilla) o [GitHub Sponsors](https://github.com/sponsors/GaelQuinta).
 <!-- apoyo:end -->
 
-The experimental `promotion.4-diagnostic` build writes persistent presentation logs to the game’s `logs/mcopt-presentation-*.log` files. It is for investigating the unresolved fullscreen ProMotion freeze. See [presentation diagnostics and tests](tools/presentation/README.md#diagnostic-recorder-promotion4-diagnostic).
+The experimental `promotion.5-diagnostic` build keeps display callbacks running during GPU waits and writes persistent presentation logs to the game’s `logs/mcopt-presentation-*.log` files. The native-fullscreen freeze still needs confirmation with this candidate fix. See [presentation diagnostics and tests](tools/presentation/README.md#fullscreen-handoff-promotion5-diagnostic).

@@ -299,7 +299,7 @@ id<MTLBuffer> mc_buffer_private(Ctx *ctx, id<MTLBuffer> src, uint64_t size) {
 		[b copyFromBuffer:src sourceOffset:0 toBuffer:dst destinationOffset:0 size:size];
 		[b endEncoding];
 		[cb commit];
-		[cb waitUntilCompleted];
+		mc_cmd_wait(cb);
 		return dst;
 	}
 }
@@ -1014,7 +1014,7 @@ id<MTLCommandBuffer> mc_enc_commit(Enc *enc) {
 
 void mc_cmd_wait(id<MTLCommandBuffer> c) {
 	mc_presentation_mark("command.wait.begin", c, 0);
-	[c waitUntilCompleted];
+	mc_display_link_wait_for_command(c);
 	mc_presentation_mark("command.wait.end", c, 0);
 }
 int mc_cmd_done(id<MTLCommandBuffer> c) { return c.status >= MTLCommandBufferStatusCompleted; }
@@ -2118,6 +2118,6 @@ void mc_present_drain(void) {
 	if (pqQueue) { @autoreleasepool {
 		id<MTLCommandBuffer> c = [pqQueue commandBuffer];
 		[c commit];
-		[c waitUntilCompleted];
+		mc_cmd_wait(c);
 	} }
 }

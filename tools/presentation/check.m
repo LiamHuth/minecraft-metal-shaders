@@ -71,6 +71,46 @@ static void transitionCheck(Ctx *ctx, Enc *enc, CAMetalLayer *layer, id<MTLTextu
     require(mc_display_link_close(link),"unused drawable can be discarded without GPU work");
     puts("PASS: 12 delayed-GPU and uncommitted transitions, legacy restart, unused drawable");
 }
+
+// Model a completion that depends on the display link's private run loop. The old
+// MAX_IN_FLIGHT wait blocked that loop, including after close had deferred teardown.
+// A separate watchdog releases the synthetic GPU gate if the regression returns,
+// so this test fails instead of leaving a deliberately blocked command on the GPU.
+static void runLoopFenceCheck(Ctx *ctx, Enc *enc, CAMetalLayer *layer, id<MTLTexture> src) {
+    for (int phase = 0; phase < 3; phase++) { @autoreleasepool {
+        void *link = mc_display_link_create(layer,1,0);
+        require(link && mc_display_link_begin(link,120),"run-loop fence acquired drawable");
+        id<MTLSharedEvent> gate = [ctx->device newSharedEvent];
+        [mc_frame_cmd(enc) encodeWaitForEvent:gate value:1];
+        mc_present_display_link(enc,link,src,-1);
+        if (phase != 0) require(!mc_display_link_close(link),"retire before submitting fenced frame");
+        id<MTLCommandBuffer> done = mc_enc_commit(enc);
+        __block BOOL serviced = NO;
+        CFRunLoopPerformBlock(CFRunLoopGetCurrent(), CFSTR("mcopt.display-link"), ^{
+            serviced = YES;
+            gate.signaledValue = 1;
+        });
+        CFRunLoopWakeUp(CFRunLoopGetCurrent());
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC),
+            dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE,0), ^{ gate.signaledValue = 1; });
+        if (phase == 2) {
+            // No events() or begin(): close itself must service its registered mode.
+            double stop = CACurrentMediaTime() + 2;
+            while (!mc_display_link_close(link)) {
+                require(CACurrentMediaTime() < stop,"run-loop retirement bounded");
+                usleep(1000);
+            }
+        } else {
+            mc_cmd_wait(done); // actual renderer frame-limit/resource/shutdown fence
+            require(serviced,"renderer GPU wait serviced the display run loop");
+            closeLink(link);
+        }
+        require(serviced,"GPU fence/retirement serviced the display run loop");
+        require(done.status == MTLCommandBufferStatusCompleted,"run-loop fenced GPU frame completed");
+        [done release]; [gate release];
+    } }
+    puts("PASS: run-loop-dependent GPU completion while active, retiring, and polling close");
+}
 int main(int argc, const char **argv) { @autoreleasepool {
     const char *trace = getenv("MCOPT_PRESENTATION_TRACE");
     if (trace) require(mc_presentation_trace_open(trace) == 0,"trace opened");
@@ -171,6 +211,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
         fprintf(stdout,"PASS %s: %d callbacks in %.2f s; caps 120/60/90, resize, hide/restore, late frame, pixels\n",mode?"HDR":"SDR",callbacks,CACurrentMediaTime()-start);
         require(callbacks>1500,"callbacks actually arrived");
         closeLink(link);
+        runLoopFenceCheck(ctx,enc,layer,src);
         transitionCheck(ctx,enc,layer,src);
         [readback release]; [src release]; [hdr release];
     }

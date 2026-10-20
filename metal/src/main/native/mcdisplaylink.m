@@ -10,6 +10,40 @@
 #import "mcpresentationtrace.h"
 
 static NSString *const MCDisplayMode = @"mcopt.display-link";
+// Lifecycle and renderer fences share the render thread. Track registrations rather than
+// the user's enabled preference: a retiring link still needs its owning run loop.
+static _Thread_local unsigned int registeredLinks;
+
+static void serviceDisplayLoop(void) {
+    @autoreleasepool {
+        // Do not dispatch SDL input or re-enter the game while it is retiring resources.
+        // Delegate calls outside begin() discard updates instead of acquiring more frames.
+        SInt32 result = CFRunLoopRunInMode((CFStringRef)MCDisplayMode, 0.001, true);
+        if (result == kCFRunLoopRunFinished) [NSThread sleepForTimeInterval:0.001];
+    }
+}
+
+void mc_display_link_wait_for_command(id<MTLCommandBuffer> commandBuffer) {
+    if (commandBuffer && registeredLinks && commandBuffer.status < MTLCommandBufferStatusCompleted) {
+        mc_presentation_mark("link.gpu-wait.begin", commandBuffer, commandBuffer.status);
+        double nextReport = CACurrentMediaTime() + 1;
+        while (commandBuffer.status < MTLCommandBufferStatusCompleted) {
+            serviceDisplayLoop();
+            double now = CACurrentMediaTime();
+            if (now >= nextReport) {
+                // Callbacks can keep the CPU breadcrumb monitor alive even when the GPU
+                // isn't progressing. Persist the outstanding command explicitly as well.
+                mc_presentation_mark("link.gpu-wait.pending", commandBuffer, commandBuffer.status);
+                mc_presentation_snapshot("GPU fence pending while servicing display callbacks");
+                nextReport = now + 5;
+            }
+        }
+        mc_presentation_mark("link.gpu-wait.end", commandBuffer, commandBuffer.status);
+    }
+    // Preserve waitUntilCompleted's completion-handler ordering before Java recycles
+    // resources. With a link registered, the GPU has already reached a terminal status.
+    [commandBuffer waitUntilCompleted];
+}
 
 @interface MCDisplayStats : NSObject {
 @public
@@ -124,6 +158,7 @@ void *mc_display_link_create(CAMetalLayer *layer, int latency, int log) {
         mc_presentation_mark("link.pause.end", p, 0);
         mc_presentation_trace_note("link.add-runloop.begin");
         [p->link addToRunLoop:p->runLoop forMode:MCDisplayMode];
+        registeredLinks++;
         mc_presentation_trace_note("link.create.end");
         NSLog(@"[mcopt] CAMetalDisplayLink enabled (latency %d); VSync off uses legacy pacing", latency == 2 ? 2 : 1);
         return p;
@@ -167,6 +202,13 @@ int mc_display_link_close(void *handle) {
     p->frame = nil;
     retireFrames(p);
     if (p->inFlight.count) {
+        // Retirement must keep servicing the same mode as begin(). Merely polling
+        // command status strands display transactions when native fullscreen needs
+        // callbacks to advance. Keep each close attempt bounded.
+        serviceDisplayLoop();
+        retireFrames(p);
+    }
+    if (p->inFlight.count) {
         if (!p->retiring && p->logging) NSLog(@"[mcopt] display link: switching, waiting for %lu GPU frame(s)", (unsigned long)p->inFlight.count);
         if (!p->retiring) mc_presentation_trace_note("link.close.deferred: encoded/submitted frames remain");
         p->retiring = YES;
@@ -182,6 +224,7 @@ int mc_display_link_close(void *handle) {
     mc_presentation_trace_note("link.invalidate.end");
     [p->link release];
     p->link = nil; // invalidate exactly once; repeated invalidation crashes on macOS 27
+    registeredLinks--;
     mc_presentation_trace_note("link.transaction-flush.begin");
     [CATransaction flush];
     mc_presentation_trace_note("link.transaction-flush.end");

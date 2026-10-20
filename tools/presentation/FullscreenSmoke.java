@@ -19,6 +19,7 @@ import java.util.concurrent.TimeUnit;
 public class FullscreenSmoke implements ClientModInitializer {
     static Minecraft mc;
     static boolean guarded;
+    static final boolean EXCLUSIVE = Boolean.getBoolean("mcopt.smoke.exclusive");
     static final InputConstants.Key KEY = InputConstants.Type.KEYBOARD.getOrCreate(InputConstants.KEY_F7);
     static void check(boolean ok, String message) { if (!ok) throw new AssertionError(message); }
     static void game(Runnable work) throws Exception { mc.submit(work).get(guarded ? 3 : 30, TimeUnit.SECONDS); }
@@ -63,15 +64,15 @@ public class FullscreenSmoke implements ClientModInitializer {
                 check(ready,"World loaded");
                 Thread.sleep(2000);
                 game(() -> {
-                    note("enter-fullscreen");
-                    mc.getWindow().setExclusiveFullscreen(true);
+                    note("enter-fullscreen exclusive=" + EXCLUSIVE);
+                    mc.getWindow().setExclusiveFullscreen(EXCLUSIVE);
                     mc.getWindow().setFullscreen(true);
                 });
                 Thread.sleep(2000);
                 game(() -> {
                     long flags = SDLVideo.SDL_GetWindowFlags(mc.getWindow().handle());
                     check((flags & SDLVideo.SDL_WINDOW_FULLSCREEN) != 0, "SDL fullscreen active");
-                    check(mc.getWindow().isExclusiveFullscreen(), "Exclusive fullscreen requested");
+                    check(mc.getWindow().isExclusiveFullscreen() == EXCLUSIVE, "Requested fullscreen mode");
                     check(ShadeXdr.active() && ShadeXdr.fullScene(), "Full-scene HDR active");
                     note("fullscreen-confirmed pixels=" + mc.getWindow().getWidth() + "x" + mc.getWindow().getHeight() + " flags=" + flags);
                 });

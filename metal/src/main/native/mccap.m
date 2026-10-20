@@ -359,7 +359,7 @@ int mcc_copy_buffers_completed(Ctx *ctx, int n, id<MTLBuffer> const *src, const 
 		}
 		[blit endEncoding];
 		[cmd commit];
-		[cmd waitUntilCompleted];
+		mc_cmd_wait(cmd);
 		if (cmd.status != MTLCommandBufferStatusCompleted) return -3;
 		for (int i = 0; i < n; i++) {
 			id<MTLBuffer> out = outputs[(NSUInteger) i];
