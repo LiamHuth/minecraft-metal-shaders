@@ -1011,7 +1011,7 @@ double mc_cmd_gpu_start(id<MTLCommandBuffer> c) { return c.GPUStartTime; }
 double mc_host_seconds(void) { return CACurrentMediaTime(); }
 // Opt-in cadence probe. Fixed storage; callbacks never enter Java. Callback time is NOT scanout time.
 #define CADENCE_CAPACITY 1048576
-static uint64_t cadenceHandler[CADENCE_CAPACITY], cadencePresented[CADENCE_CAPACITY];
+static uint64_t cadenceHandler[CADENCE_CAPACITY], cadencePresented[CADENCE_CAPACITY], cadencePresentGpuEnd[CADENCE_CAPACITY];
 // 0 unknown, 1 sent to presentation, 2 superseded before acquisition,
 // 3 superseded after acquisition, 4 no drawable. Intentional drops have no
 // presented callback; do not confuse them with missing measurements.
@@ -1029,6 +1029,7 @@ void mc_cadence_present(id<CAMetalDrawable> drawable, int slot) {
 }
 uint64_t mc_cadence_handler(int slot) { return __atomic_load_n(&cadenceHandler[slot], __ATOMIC_ACQUIRE); }
 uint64_t mc_cadence_presented(int slot) { return __atomic_load_n(&cadencePresented[slot], __ATOMIC_ACQUIRE); }
+uint64_t mc_cadence_present_gpu_end(int slot) { return __atomic_load_n(&cadencePresentGpuEnd[slot], __ATOMIC_ACQUIRE); }
 int mc_cadence_state(int slot) { return slot >= 0 && slot < CADENCE_CAPACITY ? atomic_load(&cadenceState[slot]) : 0; }
 
 
@@ -2009,7 +2010,7 @@ static int pqFill(Enc *enc, id<MTLTexture> src) {
 
 // Draws staging slot `slot` into `drawable` on a pqQueue command buffer that first waits for the slot's fill, presents it,
 // and frees the slot when the GPU is done with it.
-static void pqEncodePresent(id<CAMetalDrawable> drawable, int slot, uint64_t wait, double queuedAt) {
+static void pqEncodePresent(id<CAMetalDrawable> drawable, int slot, uint64_t wait, double queuedAt, long cadence) {
 	Ctx *ctx = pqCtx;
 	id<MTLCommandBuffer> p = [pqQueue commandBuffer];
 	[p encodeWaitForEvent:pqEvent value:wait];
@@ -2025,6 +2026,8 @@ static void pqEncodePresent(id<CAMetalDrawable> drawable, int slot, uint64_t wai
 	[r drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
 	[r endEncoding];
 	[p addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+		if (cadence >= 0 && cadence < CADENCE_CAPACITY)
+			__atomic_store_n(&cadencePresentGpuEnd[cadence], (uint64_t)(cb.GPUEndTime * 1e9), __ATOMIC_RELEASE);
 		gpuLatency += (CACurrentMediaTime() - queuedAt - gpuLatency) * 0.1;
 		atomic_store(&pqBusy[slot], 0);
 	}];
@@ -2111,7 +2114,7 @@ static void pqWork(void) {
 			h = pqRefresh(h);
 			slot = (int) (h & 3);
 			if (pqCadence[slot] >= 0) mc_cadence_present(drawable, (int) pqCadence[slot]);
-			pqEncodePresent(drawable, slot, h >> 2, pqQueuedAt[slot]);
+			pqEncodePresent(drawable, slot, h >> 2, pqQueuedAt[slot], pqCadence[slot]);
 		}
 	}
 }
@@ -2137,7 +2140,7 @@ static void pqSubmit(void) {
 	if (pqAcq) pqPublish();
 	if (!pqDrawable) return;
 	@autoreleasepool {
-		pqEncodePresent(pqDrawable, pqSlot, pqWait, CACurrentMediaTime());
+		pqEncodePresent(pqDrawable, pqSlot, pqWait, CACurrentMediaTime(), -1);
 	}
 	[pqDrawable release];
 	pqDrawable = nil;

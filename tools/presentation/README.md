@@ -81,6 +81,11 @@ heavier steps. It is injected before the staging copy/event signal so presentati
 cannot bypass that work. Older probes appended load after that signal, making
 their loaded results unsuitable as a direct control for this protocol.
 
+For longer measurements use `--sample-ms 20000`. For the higher-cap comparison use
+`--phases 120,120g,240,240g`; `g` enables the changing GPU load. Set
+`--output-height 0` to test native resolution instead of the default 900p fullscreen
+output. Always compare A and B with the same phase plan and resolution.
+
 Native context records actual fullscreen, focus, HDR, VSync, drawable dimensions,
 drawable count, and screen refresh capabilities. The report preserves raw frame
 timestamps and explicit drop outcomes. Analysis rejects unexplained missing or
@@ -99,3 +104,66 @@ VSync remains enabled in these comparisons.
 Keep the feature opt-in unless repeated tests show better delay with equal or
 better frame delivery and consistency. Correct frame selection is necessary, but
 is not by itself evidence of a better playing experience.
+
+## Results on the M4 Pro, 2026-10-24
+
+The completion-readiness candidate (`842be91`, diagnostic jar `.12`) was compared
+with its disabled control in two fullscreen A/B/B/A sets, on the built-in 120 Hz
+display with HDR and VSync. All sessions passed context and timestamp checks.
+These are averages of the per-session statistics from the longer set:
+
+| Workload | Control / candidate displayed FPS | Control / candidate median delay |
+|---|---:|---:|
+| 120 FPS cap, light | 119.53 / 119.50 | 14.92 / 14.64 ms |
+| 120 FPS cap, varying GPU load | 106.01 / 106.41 | 31.63 / 30.59 ms |
+| 240 FPS cap, light | 120.00 / 120.00 | 39.36 / 30.96 ms |
+| 240 FPS cap, varying GPU load | 105.33 / 105.68 | 37.63 / 37.41 ms |
+
+The meaningful repeatable gain was at the higher cap with light GPU load: 2,541
+refresh replacements across the two candidate samples, and about 8.4 ms less
+median delay with unchanged 8.33 ms frame spacing. There were no refresh
+replacements in those 120 FPS samples, so their small timing differences should
+not be interpreted as an improvement caused by replacement. Raising the cap was
+still worse for latency than staying at 120 in the light scene.
+
+A follow-up prototype (`.13`) handed frames to the worker only after GPU
+completion. It passed correctness checks but reduced loaded throughput to about
+94–95 FPS and substantially increased frame-time spikes. It was rejected; that
+publication change is not in this branch's current implementation.
+
+The candidate remains off by default. It is a limited queue-freshness improvement,
+not a solution to adaptive refresh or all sub-120 FPS pacing problems.
+
+Additional checks used native 3456×2168 fullscreen output, windowed HDR, and a
+fixed-startup SDR session. Native-resolution loaded averages were 91.71 FPS for
+the control and 90.97 FPS for the candidate, with median delays of 33.95 and
+33.03 ms; neither candidate run replaced a frame. This does not establish a useful
+improvement under sustained GPU pressure.
+
+Windowed results also do not establish a latency benefit: the control itself
+changed substantially between sessions (at 50 FPS, 16.42 to 29.46 ms median delay).
+The candidate's two windowed runs were close to the latter control. The reason
+for that session-to-session shift is not established by these measurements, so
+averaging it away would overstate confidence in either a benefit or a regression.
+
+Diagnostic jar `.14` keeps the `.12` selection behavior and adds the presentation
+command buffer's GPU-end timestamp to the opt-in recorder. It uses the existing
+completion handler, captures the selected frame's identity, and does not add a
+GPU fence. `renderEndToPresentGpuEndMs` and `presentGpuEndToShownMs` split the
+remaining software delay; both retain signed deltas and report missing coverage.
+They still do not measure physical display scanout or input-to-photon latency.
+
+The final `.14` fullscreen A/B/B/A check showed 106.81 / 106.85 displayed FPS and
+30.84 / 30.57 ms median delay under varying GPU load at a 120 FPS cap: effectively
+unchanged. The final presentation GPU work finished a median 0.06–1.29 ms after
+the render command buffer, followed by roughly 15 ms until reported presentation
+in loaded samples. That directs the next investigation toward presentation
+scheduling, rather than the cost of the final GPU pass.
+
+At the 240 FPS cap, this final set averaged 34.32 / 29.73 ms median delay and
+41.33 / 33.47 ms at the 95th percentile. However, the two control medians differed
+substantially (39.28 and 29.36 ms), so a fixed 8 ms median improvement is not
+established across all runs. The reduction in tail delay was more consistent.
+Displayed rates were 120.00 / 119.95 FPS. All final presentation GPU timestamps
+were present. Across these experiments, 30 fixed-mode game sessions completed
+without a crash or freeze; live fullscreen/HDR/pacing transitions were not tested.

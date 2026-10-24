@@ -51,6 +51,7 @@ final class Native {
 	private static final MethodHandle CADENCE_HANDLER = fn("mc_cadence_handler", false, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle CADENCE_PRESENTED = fn("mc_cadence_presented", false, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle CADENCE_STATE = fn("mc_cadence_state", false, JAVA_INT, JAVA_INT);
+	private static final MethodHandle CADENCE_PRESENT_GPU_END = fn("mc_cadence_present_gpu_end", false, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle CMD_GPU_US = fn("mc_cmd_gpu_us", false, JAVA_DOUBLE, JAVA_LONG);
 	private static final MethodHandle DIAG_ENABLE = fn("mc_diag_enable", false, null, JAVA_DOUBLE);
 	private static final MethodHandle GPUCOUNT_ENABLE = fn("mc_gpucount_enable", false, null, JAVA_LONG, JAVA_INT, JAVA_INT);  // -Dmcopt.metal.gpuCount (mcmetal.m, GPU counting)
@@ -248,6 +249,7 @@ final class Native {
 	static int presentFresh(int enabled) { try { return (int) PRESENT_FRESH.invokeExact(enabled); } catch (Throwable t) { throw rethrow(t); } }
 	static long presentFreshStat(int kind) { try { return (long) PRESENT_FRESH_STAT.invokeExact(kind); } catch (Throwable t) { throw rethrow(t); } }
 	static int cadenceState(int index) { try { return (int) CADENCE_STATE.invokeExact(index); } catch (Throwable t) { throw rethrow(t); } }
+	static long cadencePresentGpuEnd(int index) { try { return (long) CADENCE_PRESENT_GPU_END.invokeExact(index); } catch (Throwable t) { throw rethrow(t); } }
 	static void sleepPrecise(long ns) { try { SLEEP_PRECISE.invokeExact(ns); } catch (Throwable t) { throw rethrow(t); } }
 	static boolean pace(double marginSeconds) { try { return (int) PACE.invokeExact(marginSeconds) != 0; } catch (Throwable t) { throw rethrow(t); } }
 

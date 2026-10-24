@@ -91,6 +91,14 @@ for name, phase in data["phases"].items():
         "longIntervalsOver1_5Periods": sum(x > 1.5 * target for x in intervals),
     }
     row["displayedFps"] = 1000 / statistics.mean(intervals) if intervals else None
+    if "presentGpuEndNs" in gpu:
+        selected = [i for i in indices if begin <= gpu["presentedTimeNs"][i] < end]
+        valid_ends = [i for i in selected if gpu["presentGpuEndNs"][i] > 0 and gpu["gpuEndNs"][i] > 0]
+        row["missingPresentGpuEnd"] = len(selected) - len(valid_ends)
+        # Signed deltas are retained: a negative value is evidence to investigate,
+        # not a sample to silently remove from a claimed queue-delay distribution.
+        row["renderEndToPresentGpuEndMs"] = summary([(gpu["presentGpuEndNs"][i] - gpu["gpuEndNs"][i]) / 1e6 for i in valid_ends])
+        row["presentGpuEndToShownMs"] = summary([(gpu["presentedTimeNs"][i] - gpu["presentGpuEndNs"][i]) / 1e6 for i in valid_ends])
     row["validForComparison"] = (row["validContext"] and len(intervals) >= 10
         and unknown == 0 and contradictory == 0 and duplicate_times == 0
         and len(latency) == len(shown) and gpu["dropped"] == 0)
@@ -100,6 +108,10 @@ for name, phase in data["phases"].items():
           f"poll->shown median/p95={fmt(row['pollToPresentationMs']['p50'])}/{fmt(row['pollToPresentationMs']['p95'])}ms "
           f"GPU median={fmt(row['gpuMs']['p50'])}ms")
     print("  interval bins:", row["intervalHistogramMs"])
+    if "presentGpuEndNs" in gpu:
+        print("  median render end -> present GPU end -> shown:",
+            fmt(row["renderEndToPresentGpuEndMs"]["p50"]), "+", fmt(row["presentGpuEndToShownMs"]["p50"]),
+            "ms; missing present GPU timestamps:", row["missingPresentGpuEnd"])
     if row["missingPresentationTimestamps"]:
         print(f"  coverage: {unknown} unexplained, {row['missingPresentationTimestamps']} total absent (includes intentional replacements), "
               f"{row['missingPresentedCallbacks']} callbacks missing, "
