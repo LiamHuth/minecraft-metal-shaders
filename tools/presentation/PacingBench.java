@@ -128,8 +128,12 @@ public class PacingBench implements ClientModInitializer {
                 }).get(10, TimeUnit.SECONDS);
                 game(() -> SDLVideo.SDL_RaiseWindow(mc.getWindow().handle()));
                 Thread.sleep(5000);
-                int[] limits = {50, 60, 120, 120};
-                for (int i = 0; i < limits.length; i++) phase(i, limits[i], i == 3);
+                String[] plan = System.getProperty("mcopt.bench.phases", "50,60,120,120g").split(",");
+                for (int i = 0; i < plan.length; i++) {
+                    boolean load = plan[i].endsWith("g");
+                    int cap = Integer.parseInt(load ? plan[i].substring(0, plan[i].length() - 1) : plan[i]);
+                    phase(i, cap, load);
+                }
                 Thread.sleep(1500);
                 game(() -> {
                     Map<String, Object> report = new LinkedHashMap<>();

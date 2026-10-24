@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -17,7 +18,14 @@ parser.add_argument("--prepare-only", action="store_true")
 parser.add_argument("--fresh", action="store_true")
 parser.add_argument("--fullscreen", action="store_true")
 parser.add_argument("--sdr", action="store_true")
+parser.add_argument("--phases", default="50,60,120,120g", help="Comma-separated caps; g adds varying GPU load")
+parser.add_argument("--sample-ms", type=int, default=10000)
+parser.add_argument("--output-height", type=int, help="Shader output height; zero keeps native output")
 opts = parser.parse_args()
+if not re.fullmatch(r'\d+g?(,\d+g?)*', opts.phases) or any(int(x.rstrip('g')) not in range(10, 261, 10) for x in opts.phases.split(',')):
+    parser.error('Phases must use caps from 10 to 260 in steps of 10, with optional g')
+if not 1000 <= opts.sample_ms <= 60000:
+    parser.error('Sample duration must be 1000–60000 ms')
 jar = opts.jar.resolve()
 output = opts.output.resolve()
 output.mkdir(parents=True, exist_ok=False)  # preserve previous measurements
@@ -51,7 +59,7 @@ shutil.copy2(jar, game / "mods")
     "renderDistance:4\nsimulationDistance:5\nlang:en_us\nonboardAccessibility:false\n")
 (game / "config/mcopt.properties").write_text(
     f"mcopt.shade=true\nmcopt.shade.xdr={str(not opts.sdr).lower()}\nmcopt.shade.hdrMode=scene\n"
-    f"mcopt.shade.output={900 if opts.fullscreen else 2160}\n")
+    f"mcopt.shade.output={opts.output_height if opts.output_height is not None else (900 if opts.fullscreen else 2160)}\n")
 classes = output / "classes"
 classes.mkdir(exist_ok=True)
 sources = [Path(__file__).with_name(name) for name in ["PacingBench.java", "PollTimingMixin.java", "GpuLoad.java", "GpuLoadMixin.java", "BenchContext.java"]]
@@ -82,6 +90,7 @@ args = [
     f"-Dmcopt.bench.loadLibrary={load_library}",
     f"-Dmcopt.bench.fullscreen={str(opts.fullscreen).lower()}",
     f"-Dmcopt.bench.hdr={str(not opts.sdr).lower()}",
+    f"-Dmcopt.bench.phases={opts.phases}", f"-Dmcopt.bench.sampleMs={opts.sample_ms}",
     "-classpath", ":".join(cp), "net.fabricmc.loader.impl.launch.knot.KnotClient",
     "--username", "PacingTest", "--uuid", "00000000-0000-0000-0000-000000000001",
     "--accessToken", "0", "--version", "26.3", "--gameDir", str(game),
@@ -92,7 +101,8 @@ if opts.fullscreen:
     "jar": str(jar), "sha256": hashlib.sha256(jar.read_bytes()).hexdigest(),
     "game": str(game), "args": args, "fresh": opts.fresh,
     "fullscreen": opts.fullscreen, "hdr": not opts.sdr,
-    "protocol": "Fixed startup display/policy; native VSync on; 50/60/120 light, 120 varying GPU work BEFORE staging signal; 3s settle + 10s sample; disposable flat world seed 1234"
+    "phases": opts.phases, "sampleMs": opts.sample_ms, "outputHeight": opts.output_height,
+    "protocol": "Fixed startup display/policy; native VSync on; varying GPU work BEFORE staging signal; 3s settle per phase; disposable flat world seed 1234"
 }, indent=2) + "\n")
 if opts.prepare_only:
     print("Prepared without launching:", game)
@@ -103,7 +113,7 @@ with (output / "game.log").open("w") as log:
     process = subprocess.Popen(args, cwd=game, stdout=log, stderr=subprocess.STDOUT, env=env)
     (output / "game-pid").write_text(str(process.pid))
     try:
-        code = process.wait(timeout=240)
+        code = process.wait(timeout=120 + len(opts.phases.split(',')) * (3 + opts.sample_ms / 1000))
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait(timeout=5)

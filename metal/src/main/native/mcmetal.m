@@ -1938,11 +1938,12 @@ static int pqSlot;
 static uint64_t pqWait;
 static _Atomic long pqSkipped;
 static Ctx *pqCtx;
-// Startup-only experiment. The normal path keeps its device-local event. The
-// candidate uses a shared event so readiness can be read without waiting for a
-// command-buffer callback or touching a staging slot owned by the producer.
+// Startup-only experiment. Preserve the device-local event used by the normal
+// path; CPU-visible shared events added presentation delay in A/B tests. A
+// completed-handler watermark is conservative: a delayed callback may miss a
+// refresh opportunity, but can never select a frame whose GPU work is pending.
 static int pqFresh;
-static id<MTLSharedEvent> pqReady;
+static _Atomic uint64_t pqCompleted;
 static _Atomic long pqFreshChecks, pqRefreshed, pqFreshSavedNs, pqDrawableWaitNs;
 
 int mc_present_fresh(int enabled) {
@@ -1975,12 +1976,7 @@ static int pqFill(Enc *enc, id<MTLTexture> src) {
 	@autoreleasepool {
 		if (!pqQueue) {
 			pqQueue = [ctx->device newCommandQueue];
-			if (pqFresh) pqReady = [ctx->device newSharedEvent];
-			pqEvent = pqReady ? pqReady : [ctx->device newEvent];
-			if (pqFresh && !pqReady) {
-				pqFresh = 0;
-				fprintf(stderr, "[mcopt] presentFresh: shared event unavailable; using existing presentation\n");
-			}
+			pqEvent = [ctx->device newEvent];
 		}
 		id<MTLTexture> st = pqStaging[k];
 		int xdr = mc_xdr_on();  // XDR (mcxdr.m): the slot holds the composed extended-range image (RGB9E5) instead of a copy
@@ -2000,7 +1996,13 @@ static int pqFill(Enc *enc, id<MTLTexture> src) {
 				toTexture:st destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
 			[b endEncoding];
 		}
-		[cmd(enc) encodeSignalEvent:pqEvent value:++pqValue];
+		uint64_t filled = ++pqValue;
+		[cmd(enc) encodeSignalEvent:pqEvent value:filled];
+		if (pqFresh) [cmd(enc) addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+			if (cb.status != MTLCommandBufferStatusCompleted) return;
+			// Callbacks need not arrive in order. Never move the watermark back.
+			mc_present_complete(&pqCompleted, filled);
+		}];
 	}
 	return k;
 }
@@ -2065,7 +2067,7 @@ void mc_cadence_present(id<CAMetalDrawable> drawable, int slot);
 static uint64_t pqRefresh(uint64_t current) {
 	if (!pqFresh) return current;
 	atomic_fetch_add(&pqFreshChecks, 1);
-	uint64_t selected = mc_present_take_ready(&pqHandoff, current, pqReady.signaledValue);
+	uint64_t selected = mc_present_take_ready(&pqHandoff, current, atomic_load(&pqCompleted));
 	if (selected != current) {
 		double saved = pqQueuedAt[selected & 3] - pqQueuedAt[current & 3];
 		atomic_fetch_add(&pqFreshSavedNs, (long) (fmax(0, saved) * 1e9));

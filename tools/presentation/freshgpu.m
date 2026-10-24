@@ -99,7 +99,10 @@ int main(int argc, char **argv) { @autoreleasepool {
 			selected = pqRefresh(current);
 			check(selected == (enabled ? newest : current), "ready frame selection respects opt-in");
 			pixel(selected, enabled ? 2 : 0, enabled ? 300 : 100, hdr);
-			if (enabled) check(!atomic_load(&pqBusy[current & 3]), "discarded current slot released exactly once");
+			if (enabled) {
+				check(!atomic_load(&pqBusy[current & 3]), "discarded current slot released exactly once");
+				check(mc_cadence_state(100) == 3, "discarded frame has an explicit diagnostic outcome");
+			}
 			atomic_store(&pqBusy[selected & 3], 0);
 			uint64_t pending = atomic_exchange(&pqHandoff, 0);
 			if (pending) atomic_store(&pqBusy[pending & 3], 0);

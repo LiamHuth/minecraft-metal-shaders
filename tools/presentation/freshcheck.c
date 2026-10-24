@@ -9,6 +9,18 @@ static _Atomic uint64_t handoff, completed, owner[3];
 static uint64_t payload[3];
 static _Atomic int done;
 static unsigned checked, replaced;
+static _Atomic uint64_t watermark;
+
+static void *completion(void *offset) {
+	uint64_t previous = 0;
+	for (uint64_t n = 100000; n > 0; n--) {
+		mc_present_complete(&watermark, n * 2 + (uintptr_t)offset);
+		uint64_t now = atomic_load(&watermark);
+		assert(now >= previous);
+		previous = now;
+	}
+	return NULL;
+}
 
 static void release_slot(uint64_t token) {
 	assert(token);
@@ -70,11 +82,16 @@ int main(void) {
 	assert(mc_present_take_ready(&handoff, next, 100) == next);
 	assert(atomic_exchange(&handoff, 0) == current);
 	pthread_t a, b;
+	assert(!pthread_create(&a, NULL, completion, (void *)0));
+	assert(!pthread_create(&b, NULL, completion, (void *)1));
+	assert(!pthread_join(a, NULL));
+	assert(!pthread_join(b, NULL));
+	assert(atomic_load(&watermark) == 200001);
 	assert(!pthread_create(&a, NULL, producer, NULL));
 	assert(!pthread_create(&b, NULL, consumer, NULL));
 	assert(!pthread_join(a, NULL));
 	assert(!pthread_join(b, NULL));
 	for (int k = 0; k < 3; k++) assert(!atomic_load(&owner[k]));
 	assert(checked && replaced);
-	printf("PASS: empty/pending/ready/stale selection; 300000 concurrent publications, %u consumed, %u refreshed; no double ownership or leaked slots\n", checked, replaced);
+	printf("PASS: out-of-order completion; empty/pending/ready/stale selection; 300000 concurrent publications, %u consumed, %u refreshed; no double ownership or leaked slots\n", checked, replaced);
 }
