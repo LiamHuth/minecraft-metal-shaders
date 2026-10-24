@@ -3,6 +3,7 @@
 // Built without ARC so ownership is explicit. Hot encoder calls allocate nothing, so they need no autorelease pool.
 #include <stdatomic.h>
 #import "mcmetal.h"
+#include "mcpresentfresh.h"
 #import <CoreVideo/CoreVideo.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <QuartzCore/CABase.h>
@@ -1011,8 +1012,16 @@ double mc_host_seconds(void) { return CACurrentMediaTime(); }
 // Opt-in cadence probe. Fixed storage; callbacks never enter Java. Callback time is NOT scanout time.
 #define CADENCE_CAPACITY 1048576
 static uint64_t cadenceHandler[CADENCE_CAPACITY], cadencePresented[CADENCE_CAPACITY];
+// 0 unknown, 1 sent to presentation, 2 superseded before acquisition,
+// 3 superseded after acquisition, 4 no drawable. Intentional drops have no
+// presented callback; do not confuse them with missing measurements.
+static _Atomic int cadenceState[CADENCE_CAPACITY];
+static void cadenceMark(long slot, int state) {
+	if (slot >= 0 && slot < CADENCE_CAPACITY) atomic_store(&cadenceState[slot], state);
+}
 void mc_cadence_present(id<CAMetalDrawable> drawable, int slot) {
 	if (slot < 0 || slot >= CADENCE_CAPACITY) return;
+	cadenceMark(slot, 1);
 	[drawable addPresentedHandler:^(id<MTLDrawable> d) {
 		__atomic_store_n(&cadencePresented[slot], (uint64_t)(d.presentedTime * 1e9), __ATOMIC_RELEASE);
 		__atomic_store_n(&cadenceHandler[slot], (uint64_t)(CACurrentMediaTime() * 1e9), __ATOMIC_RELEASE);
@@ -1020,6 +1029,7 @@ void mc_cadence_present(id<CAMetalDrawable> drawable, int slot) {
 }
 uint64_t mc_cadence_handler(int slot) { return __atomic_load_n(&cadenceHandler[slot], __ATOMIC_ACQUIRE); }
 uint64_t mc_cadence_presented(int slot) { return __atomic_load_n(&cadencePresented[slot], __ATOMIC_ACQUIRE); }
+int mc_cadence_state(int slot) { return slot >= 0 && slot < CADENCE_CAPACITY ? atomic_load(&cadenceState[slot]) : 0; }
 
 
 // ---- profiling: GPU timestamps at every render encoder's stage boundaries, for one submit at a time ----
@@ -1928,6 +1938,28 @@ static int pqSlot;
 static uint64_t pqWait;
 static _Atomic long pqSkipped;
 static Ctx *pqCtx;
+// Startup-only experiment. The normal path keeps its device-local event. The
+// candidate uses a shared event so readiness can be read without waiting for a
+// command-buffer callback or touching a staging slot owned by the producer.
+static int pqFresh;
+static id<MTLSharedEvent> pqReady;
+static _Atomic long pqFreshChecks, pqRefreshed, pqFreshSavedNs, pqDrawableWaitNs;
+
+int mc_present_fresh(int enabled) {
+	if (!pqQueue) pqFresh = enabled != 0;
+	return pqFresh;
+}
+
+long mc_present_fresh_stat(int kind) {
+	switch (kind) {
+		case 0: return pqFresh;
+		case 1: return atomic_load(&pqFreshChecks);
+		case 2: return atomic_load(&pqRefreshed);
+		case 3: return atomic_load(&pqFreshSavedNs);
+		case 4: return atomic_load(&pqDrawableWaitNs);
+		default: return 0;
+	}
+}
 
 // Fills the next staging slot with src in the frame's command buffer and signals pqEvent; the slot index, or -1 if that slot
 // is still being read by an earlier present (the caller skips this frame's present).
@@ -1943,7 +1975,12 @@ static int pqFill(Enc *enc, id<MTLTexture> src) {
 	@autoreleasepool {
 		if (!pqQueue) {
 			pqQueue = [ctx->device newCommandQueue];
-			pqEvent = [ctx->device newEvent];
+			if (pqFresh) pqReady = [ctx->device newSharedEvent];
+			pqEvent = pqReady ? pqReady : [ctx->device newEvent];
+			if (pqFresh && !pqReady) {
+				pqFresh = 0;
+				fprintf(stderr, "[mcopt] presentFresh: shared event unavailable; using existing presentation\n");
+			}
 		}
 		id<MTLTexture> st = pqStaging[k];
 		int xdr = mc_xdr_on();  // XDR (mcxdr.m): the slot holds the composed extended-range image (RGB9E5) instead of a copy
@@ -2021,10 +2058,32 @@ static double pqQueuedAt[PQ_SLOTS];
 static uint64_t pqAcq;  // this frame's hand-off, published by pqSubmit after the commit
 void mc_cadence_present(id<CAMetalDrawable> drawable, int slot);
 
+// Called only after nextDrawable returns. Keep the current frame if the newest
+// hand-off is still rendering or races with the producer. All fills signal in
+// order on ctx->queue; readiness of the newer fill also fences the discarded
+// current fill. The winning CAS pins the new slot before reading its metadata.
+static uint64_t pqRefresh(uint64_t current) {
+	if (!pqFresh) return current;
+	atomic_fetch_add(&pqFreshChecks, 1);
+	uint64_t selected = mc_present_take_ready(&pqHandoff, current, pqReady.signaledValue);
+	if (selected != current) {
+		double saved = pqQueuedAt[selected & 3] - pqQueuedAt[current & 3];
+		atomic_fetch_add(&pqFreshSavedNs, (long) (fmax(0, saved) * 1e9));
+		cadenceMark(pqCadence[current & 3], 3);
+		atomic_store(&pqBusy[current & 3], 0);
+		atomic_fetch_add(&pqDropped, 1);
+		atomic_fetch_add(&pqRefreshed, 1);
+	}
+	return selected;
+}
+
 int mc_present_queued_acquire(Enc *enc, CAMetalLayer *layer, id<MTLTexture> src, long cadence) {
 	int k = pqFill(enc, src);
 	if (k < 0) return 0;
-	if (pqAcq) atomic_store(&pqBusy[pqAcq & 3], 0);  // two presents in one frame: the newer one wins
+	if (pqAcq) {
+		cadenceMark(pqCadence[pqAcq & 3], 2);
+		atomic_store(&pqBusy[pqAcq & 3], 0);  // two presents in one frame: the newer one wins
+	}
 	pqLayer = layer;
 	pqCadence[k] = cadence;
 	pqQueuedAt[k] = CACurrentMediaTime();
@@ -2039,11 +2098,16 @@ static void pqWork(void) {
 		if (!h) return;
 		int slot = (int) (h & 3);
 		@autoreleasepool {
+			double acquireStart = pqFresh ? CACurrentMediaTime() : 0;
 			id<CAMetalDrawable> drawable = [pqLayer nextDrawable];
+			if (pqFresh) atomic_fetch_add(&pqDrawableWaitNs, (long) ((CACurrentMediaTime() - acquireStart) * 1e9));
 			if (!drawable) {  // window hidden: drop this present
+				cadenceMark(pqCadence[slot], 4);
 				atomic_store(&pqBusy[slot], 0);
 				continue;
 			}
+			h = pqRefresh(h);
+			slot = (int) (h & 3);
 			if (pqCadence[slot] >= 0) mc_cadence_present(drawable, (int) pqCadence[slot]);
 			pqEncodePresent(drawable, slot, h >> 2, pqQueuedAt[slot]);
 		}
@@ -2054,6 +2118,7 @@ static void pqPublish(void) {
 	uint64_t old = atomic_exchange(&pqHandoff, pqAcq);
 	pqAcq = 0;
 	if (old) {
+		cadenceMark(pqCadence[old & 3], 2);
 		atomic_store(&pqBusy[old & 3], 0);
 		atomic_fetch_add(&pqDropped, 1);
 	}

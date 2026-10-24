@@ -49,6 +49,10 @@ final class MetalSurface implements GpuSurfaceBackend {
 		this.encoder = encoder;
 		this.view = SDLMetal.SDL_Metal_CreateView(window);
 		this.layer = SDLMetal.SDL_Metal_GetLayer(this.view);
+		// Startup-only A/B switch; preserve the present worker and normal drawable pool.
+		boolean fresh = Boolean.getBoolean("mcopt.metal.presentFresh") && MetalEncoder.PRESENT_ACQUIRE;
+		Native.presentFresh(fresh ? 1 : 0);
+		if (fresh) System.out.println("[mcopt] metal: newest completed frame selection enabled (presentFresh)");
 	}
 
 	@Override

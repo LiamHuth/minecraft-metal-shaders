@@ -20,6 +20,12 @@ public final class GpuTimes {
 	private static long dropped;
 
 	private GpuTimes() {}
+	/** Aggregate diagnostics only; age saved is the selected image's age, not measured input latency. */
+	public static Map<String, Object> presentQueueSnapshot() {
+		return Map.of("enabled", Native.presentFreshStat(0) != 0,
+			"checks", Native.presentFreshStat(1), "replacements", Native.presentFreshStat(2),
+			"selectedFrameAgeSavedNs", Native.presentFreshStat(3), "drawableWaitNs", Native.presentFreshStat(4));
+	}
 	static void initialize() {} // initialize storage and clock mapping before recording
 
 	/** Bracket the native clock with nanoTime, retaining the narrowest of 64 brackets.
@@ -108,6 +114,7 @@ public final class GpuTimes {
 		out.put("capacity", CAPACITY);
 		out.put("dropped", dropped);
 		out.put("inFlight", Integer.getInteger("mcopt.metal.inFlight", 2));
+		out.put("presentFresh", presentQueueSnapshot());
 		out.put("submitIndex", java.util.stream.LongStream.range(0, retired - first).toArray());
 		out.put("submitNs", Arrays.copyOfRange(submitNs, first, retired));
 		out.put("gpuStartNs", Arrays.copyOfRange(startNs, first, retired));
@@ -121,13 +128,16 @@ public final class GpuTimes {
 		out.put("renderPasses", Arrays.copyOfRange(passes, first, retired));
 		if (pollNs != null) out.put("pollNs", Arrays.copyOfRange(pollNs, first, retired));
 		long[] handlers = new long[retired], presented = new long[retired];
+		int[] presentationState = new int[retired];
 		for (int i = first; i < retired; i++) {
 			long h = Native.cadenceHandler(i), p = Native.cadencePresented(i);
 			handlers[i] = h == 0 ? 0 : h + calibration[0];
 			presented[i] = p == 0 ? 0 : p + calibration[0];
+			presentationState[i] = Native.cadenceState(i);
 		}
 		out.put("presentedHandlerNs", Arrays.copyOfRange(handlers, first, retired));
 		out.put("presentedTimeNs", Arrays.copyOfRange(presented, first, retired));
+		out.put("presentationState", Arrays.copyOfRange(presentationState, first, retired));
 		for (Map<String, Object> phase : phases.values()) {
 			long[] range = (long[]) phase.get("nanoRange");
 			if (range == null) continue;

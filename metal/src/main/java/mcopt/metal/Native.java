@@ -50,6 +50,7 @@ final class Native {
 	private static final MethodHandle CADENCE_PRESENT = fn("mc_cadence_present", false, null, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle CADENCE_HANDLER = fn("mc_cadence_handler", false, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle CADENCE_PRESENTED = fn("mc_cadence_presented", false, JAVA_LONG, JAVA_INT);
+	private static final MethodHandle CADENCE_STATE = fn("mc_cadence_state", false, JAVA_INT, JAVA_INT);
 	private static final MethodHandle CMD_GPU_US = fn("mc_cmd_gpu_us", false, JAVA_DOUBLE, JAVA_LONG);
 	private static final MethodHandle DIAG_ENABLE = fn("mc_diag_enable", false, null, JAVA_DOUBLE);
 	private static final MethodHandle GPUCOUNT_ENABLE = fn("mc_gpucount_enable", false, null, JAVA_LONG, JAVA_INT, JAVA_INT);  // -Dmcopt.metal.gpuCount (mcmetal.m, GPU counting)
@@ -112,6 +113,8 @@ final class Native {
 	private static final MethodHandle PRESENT_SKIPPED = fn("mc_present_skipped", false, JAVA_LONG);
 	private static final MethodHandle PRESENT_QUEUED_ACQUIRE = fn("mc_present_queued_acquire", false, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle PRESENT_DROPPED = fn("mc_present_dropped", false, JAVA_LONG);
+	private static final MethodHandle PRESENT_FRESH = fn("mc_present_fresh", false, JAVA_INT, JAVA_INT);
+	private static final MethodHandle PRESENT_FRESH_STAT = fn("mc_present_fresh_stat", false, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle PACE_ADAPT = fn("mc_pace_adapt", false, null, JAVA_INT);
 	private static final MethodHandle PACE_FOLLOW = fn("mc_pace_follow", false, null, JAVA_INT);
 	private static final MethodHandle PACE_DISPLAY = fn("mc_pace_display", false, JAVA_INT);
@@ -242,6 +245,9 @@ final class Native {
 	static void mathMode(int mode) { try { MATH_MODE.invokeExact(mode); } catch (Throwable t) { throw rethrow(t); } }
 	static double paceExtraMs() { try { return (double) PACE_EXTRA_MS.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
 	static long presentDropped() { try { return (long) PRESENT_DROPPED.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
+	static int presentFresh(int enabled) { try { return (int) PRESENT_FRESH.invokeExact(enabled); } catch (Throwable t) { throw rethrow(t); } }
+	static long presentFreshStat(int kind) { try { return (long) PRESENT_FRESH_STAT.invokeExact(kind); } catch (Throwable t) { throw rethrow(t); } }
+	static int cadenceState(int index) { try { return (int) CADENCE_STATE.invokeExact(index); } catch (Throwable t) { throw rethrow(t); } }
 	static void sleepPrecise(long ns) { try { SLEEP_PRECISE.invokeExact(ns); } catch (Throwable t) { throw rethrow(t); } }
 	static boolean pace(double marginSeconds) { try { return (int) PACE.invokeExact(marginSeconds) != 0; } catch (Throwable t) { throw rethrow(t); } }
 
