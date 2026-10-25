@@ -17,7 +17,7 @@ static void setup(id<MTLDevice> device) {
     output = [device newBufferWithLength:262144*sizeof(float) options:MTLResourceStorageModePrivate];
 }
 void bench_load(Enc *enc, uintptr_t frameCommand, int rounds) {
-    if (rounds <= 0 || rounds > 50000) return;
+    if (rounds <= 0 || rounds > 128000) { fprintf(stderr, "Invalid benchmark GPU load: %d\n", rounds); abort(); }
     setup(enc->ctx->device);
     id<MTLCommandBuffer> (*frame)(Enc *) = (void *)frameCommand;
     id<MTLComputeCommandEncoder> compute = [frame(enc) computeCommandEncoder];

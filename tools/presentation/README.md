@@ -86,11 +86,22 @@ For longer measurements use `--sample-ms 20000`. For the higher-cap comparison u
 `--output-height 0` to test native resolution instead of the default 900p fullscreen
 output. Always compare A and B with the same phase plan and resolution.
 
+For the lower-rate comparison use `--phases 30,40,50,60,60g --sample-ms 20000
+--load-scale 2 --load-step-ms 1000`. The GPU workload multiplier affects only the
+`g` phase. This keeps the four capped, lightly loaded cases separate from a 60 FPS
+cap with changing GPU pressure. The default multiplier is 1 and default step is
+237 ms, preserving the earlier protocol. Calibrate the multiplier on the test GPU;
+the cap alone does not establish which frame rates the changing-load phase reaches.
+The manifest records the workload settings and hashes the Java/native harness.
+
 Native context records actual fullscreen, focus, HDR, VSync, drawable dimensions,
 drawable count, and screen refresh capabilities. The report preserves raw frame
 timestamps and explicit drop outcomes. Analysis rejects unexplained missing or
 contradictory timestamps and invalid focus/settings. Comparisons average session
 statistics rather than treating every individual frame as an independent trial.
+The analyzer also exports complete one-second presentation counts, frame-spacing
+tails, long-gap counts, and separate input-poll/submission/GPU-completion intervals.
+The comparison rejects mixed workload or display settings within a phase.
 
 ## Interpretation limits
 
@@ -167,3 +178,43 @@ established across all runs. The reduction in tail delay was more consistent.
 Displayed rates were 120.00 / 119.95 FPS. All final presentation GPU timestamps
 were present. Across these experiments, 30 fixed-mode game sessions completed
 without a crash or freeze; live fullscreen/HDR/pacing transitions were not tested.
+
+### 30–60 FPS follow-up, 2026-10-24
+
+Four additional fullscreen A/B/B/A sessions used the unchanged `.14` jar on the
+built-in 120 Hz display, HDR, VSync and 1434×900 shader output. Each session measured
+20 seconds at each of 30/40/50/60 FPS, then a 60 FPS cap with doubled GPU work
+changing every second. The changing workload produced approximately 34–35, 45–46
+and 58–62 presentations per one-second window; counts just above 60 reflect frames
+crossing workload/window boundaries, not a change to the cap. A separate short
+calibration preceded the matrix. All focus/settings/coverage checks passed, all
+presentation GPU-end timestamps were present, and every game process closed.
+
+These are means of two session statistics per mode, not pooled independent frames:
+
+| Workload | Control / candidate FPS | Frame-spacing SD | Median poll-to-present | p95 poll-to-present |
+|---|---:|---:|---:|---:|
+| 30 cap, light | 29.97 / 29.97 | 3.00 / 2.93 ms | 14.96 / 15.21 ms | 18.52 / 18.66 ms |
+| 40 cap, light | 39.94 / 39.93 | 5.07 / 4.76 ms | 14.65 / 14.36 ms | 21.50 / 21.03 ms |
+| 50 cap, light | 49.90 / 49.92 | 4.00 / 4.09 ms | 13.65 / 13.76 ms | 18.22 / 18.54 ms |
+| 60 cap, light | 59.87 / 59.89 | 3.52 / 3.68 ms | 13.66 / 13.72 ms | 17.14 / 17.64 ms |
+| 60 cap, varying GPU load | 54.38 / 54.38 | 5.02 / 5.04 ms | 24.16 / 23.54 ms | 90.53 / 90.59 ms |
+
+No candidate sample replaced a frame. The small differences do not establish a
+benefit; this mechanism did not address low-FPS smoothness. The 95th-percentile
+display intervals were the same in both modes at every phase: 37.50, 33.33, 25.00,
+20.83 and 29.17 ms respectively. No measured display gap exceeded 50 ms. The large
+loaded latency tail is frame age, not a 90 ms gap between displayed frames.
+
+The steady caps already poll input regularly. At 40 FPS, for example, baseline
+interval SD grows from 0.06 ms at input polling to 2.50 ms at CPU submission,
+2.79 ms at render GPU completion, and 5.07 ms at presentation. That directs future
+investigation toward both frame production and display scheduling; the limiter
+alone, or only the final GPU pass, cannot explain all the variation. These stages
+are correlated and their standard deviations must not be added together.
+
+This is a fixed-camera, synthetic GPU-load timing test, not a visual assessment,
+physical latency measurement, or coverage of chunk-loading/GC stalls. No production
+renderer behavior was changed for this follow-up. The candidate remains off by
+default. Raw reports and manifests are saved in the workspace under
+`work/promotion/lowfps/fullscreen-abba`.

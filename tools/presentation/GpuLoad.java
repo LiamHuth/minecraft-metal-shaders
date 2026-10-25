@@ -8,6 +8,9 @@ import static java.lang.foreign.ValueLayout.*;
 public final class GpuLoad {
     private static MethodHandle load;
     private static long frameCommand;
+    private static final int[] ROUNDS = {8000, 12000, 18000, 24000};
+    private static final double scale = Double.parseDouble(System.getProperty("mcopt.bench.loadScale", "1"));
+    private static final long stepNs = Long.getLong("mcopt.bench.loadStepMs", 237L) * 1_000_000L;
     public static void append(long encoder) {
         if (!PacingBench.variableLoad) return;
         try {
@@ -20,9 +23,10 @@ public final class GpuLoad {
                 field.setAccessible(true);
                 frameCommand = ((SymbolLookup)field.get(null)).find("mc_frame_cmd").orElseThrow().address();
             }
-            int step = (int)((System.nanoTime() - PacingBench.loadStartedNs) / 237_000_000L);
-            int rounds = new int[]{8000, 12000, 18000, 24000}[step % 4];
+            int step = (int)((System.nanoTime() - PacingBench.loadStartedNs) / stepNs);
+            int rounds = ROUNDS[step % 4];
             if (step % 11 == 0) rounds = 32000;
+            rounds = (int)Math.round(rounds * scale);
             load.invokeExact(encoder, frameCommand, rounds);
         } catch (Throwable t) { throw new RuntimeException("Pacing benchmark GPU load failed", t); }
     }

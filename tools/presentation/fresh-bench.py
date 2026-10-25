@@ -20,12 +20,18 @@ parser.add_argument("--fullscreen", action="store_true")
 parser.add_argument("--sdr", action="store_true")
 parser.add_argument("--phases", default="50,60,120,120g", help="Comma-separated caps; g adds varying GPU load")
 parser.add_argument("--sample-ms", type=int, default=10000)
+parser.add_argument("--load-scale", type=float, default=1.0, help="GPU work multiplier, 0.25 to 4; affects only g phases")
+parser.add_argument("--load-step-ms", type=int, default=237, help="Time between GPU workload changes, 100 to 5000 ms")
 parser.add_argument("--output-height", type=int, help="Shader output height; zero keeps native output")
 opts = parser.parse_args()
 if not re.fullmatch(r'\d+g?(,\d+g?)*', opts.phases) or any(int(x.rstrip('g')) not in range(10, 261, 10) for x in opts.phases.split(',')):
     parser.error('Phases must use caps from 10 to 260 in steps of 10, with optional g')
 if not 1000 <= opts.sample_ms <= 60000:
     parser.error('Sample duration must be 1000–60000 ms')
+if not .25 <= opts.load_scale <= 4:
+    parser.error('GPU load scale must be 0.25–4')
+if not 100 <= opts.load_step_ms <= 5000:
+    parser.error('GPU load step must be 100–5000 ms')
 jar = opts.jar.resolve()
 output = opts.output.resolve()
 output.mkdir(parents=True, exist_ok=False)  # preserve previous measurements
@@ -91,6 +97,8 @@ args = [
     f"-Dmcopt.bench.fullscreen={str(opts.fullscreen).lower()}",
     f"-Dmcopt.bench.hdr={str(not opts.sdr).lower()}",
     f"-Dmcopt.bench.phases={opts.phases}", f"-Dmcopt.bench.sampleMs={opts.sample_ms}",
+    f"-Dmcopt.bench.loadScale={opts.load_scale}",
+    f"-Dmcopt.bench.loadStepMs={opts.load_step_ms}",
     "-classpath", ":".join(cp), "net.fabricmc.loader.impl.launch.knot.KnotClient",
     "--username", "PacingTest", "--uuid", "00000000-0000-0000-0000-000000000001",
     "--accessToken", "0", "--version", "26.3", "--gameDir", str(game),
@@ -102,6 +110,10 @@ if opts.fullscreen:
     "game": str(game), "args": args, "fresh": opts.fresh,
     "fullscreen": opts.fullscreen, "hdr": not opts.sdr,
     "phases": opts.phases, "sampleMs": opts.sample_ms, "outputHeight": opts.output_height,
+    "loadScale": opts.load_scale,
+    "loadStepMs": opts.load_step_ms,
+    "harnessSha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sources
+        + [Path(__file__), Path(__file__).with_name('load.m'), Path(__file__).with_name('context.m')]},
     "protocol": "Fixed startup display/policy; native VSync on; varying GPU work BEFORE staging signal; 3s settle per phase; disposable flat world seed 1234"
 }, indent=2) + "\n")
 if opts.prepare_only:

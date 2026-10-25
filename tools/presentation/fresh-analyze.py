@@ -62,8 +62,14 @@ for name, phase in data["phases"].items():
     contradictory = sum(states[i] in (2, 3, 4) and gpu["presentedTimeNs"][i] != 0 for i in indices)
     q0, q1 = phase["queueStart"], phase["queueEnd"]
     delta = {k: q1[k] - q0[k] for k in ("checks", "replacements", "selectedFrameAgeSavedNs", "drawableWaitNs")}
+    # Count all reported presentations in complete one-second windows. Include
+    # frames polled just before the phase begins, since they were still displayed.
+    phase_presentations = sorted(set(t for t in gpu["presentedTimeNs"] if begin <= t < end))
+    per_second = [sum(begin + second * 1_000_000_000 <= t < begin + (second + 1) * 1_000_000_000
+                      for t in phase_presentations) for second in range((end - begin) // 1_000_000_000)]
     row = result[name] = {
         "cap": phase["cap"], "fresh": phase["fresh"], "variableGpuLoad": phase["load"],
+        "loadScale": phase.get("loadScale", 1), "loadStepMs": phase.get("loadStepMs", 237),
         "fullscreen": fullscreen, "windowContext": context,
         "validContext": native_valid and phase["frames"] > 0
             and phase["unfocused"] + phase["wrongMode"] + phase["changedSize"] + phase["moved"] == 0
@@ -89,8 +95,22 @@ for name, phase in data["phases"].items():
         "intervalHistogramMs": dict(sorted(collections.Counter(round(x * 2) / 2 for x in intervals).items())),
         "meanAbsoluteIntervalErrorMs": statistics.mean(abs(x - target) for x in intervals) if intervals else None,
         "longIntervalsOver1_5Periods": sum(x > 1.5 * target for x in intervals),
+        "intervalsOver50Ms": sum(x > 50 for x in intervals),
+        "intervalsOver100Ms": sum(x > 100 for x in intervals),
+        "presentedFramesPerSecond": per_second,
     }
     row["displayedFps"] = 1000 / statistics.mean(intervals) if intervals else None
+    # Separate regular input polling from CPU submission, GPU completion and
+    # presentation cadence. A steady cap alone does not prove steady frame delivery.
+    for source, label in (("submitNs", "submitIntervalMs"), ("gpuEndNs", "renderGpuEndIntervalMs"),
+                          ("presentGpuEndNs", "presentGpuEndIntervalMs")):
+        if source in gpu:
+            times = sorted(set(gpu[source][i] for i in indices if gpu[source][i] > 0))
+            row[label] = summary([(b - a) / 1e6 for a, b in zip(times, times[1:])])
+    for start, finish, label in (("pollNs", "submitNs", "pollToSubmitMs"),
+                                 ("submitNs", "gpuStartNs", "submitToGpuStartMs")):
+        row[label] = summary([(gpu[finish][i] - gpu[start][i]) / 1e6 for i in indices
+                              if gpu[start][i] > 0 and gpu[finish][i] > 0])
     if "presentGpuEndNs" in gpu:
         selected = [i for i in indices if begin <= gpu["presentedTimeNs"][i] < end]
         valid_ends = [i for i in selected if gpu["presentGpuEndNs"][i] > 0 and gpu["gpuEndNs"][i] > 0]

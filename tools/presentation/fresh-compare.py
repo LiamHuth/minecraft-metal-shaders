@@ -11,10 +11,17 @@ sessions = [(s.parent.name, json.loads(s.read_text())) for s in sorted(a.matrix.
 if not sessions:
     raise SystemExit('No session summaries found')
 rows = {}
+protocols = {}
 for session, phases in sessions:
     for phase, row in phases.items():
         if not row['validForComparison'] or row['presentationBeforeGpuCompletion']:
             raise SystemExit(f'Invalid measurements in {session}/{phase}; inspect before comparing')
+        context = row['windowContext']
+        protocol = (row['cap'], row['variableGpuLoad'], row.get('loadScale', 1), row.get('loadStepMs', 237),
+                    row['fullscreen'], context['hdr'], context['vsync'], context['drawableCount'],
+                    context['drawableWidth'], context['drawableHeight'], context['screen'], context['maximumFPS'])
+        if protocols.setdefault(phase, protocol) != protocol:
+            raise SystemExit(f'Mismatched workload or display settings in {session}/{phase}')
         rows.setdefault(phase, {}).setdefault('candidate' if row['fresh'] else 'baseline', []).append(row)
 
 def average(group, key, subkey=None):
@@ -30,6 +37,10 @@ for phase, groups in rows.items():
         values = {
             'runs': len(group), 'fps': average(group, 'displayedFps'),
             'intervalStddevMs': average(group, 'intervalMs', 'stddev'),
+            'intervalP95Ms': average(group, 'intervalMs', 'p95'),
+            'intervalP99Ms': average(group, 'intervalMs', 'p99'),
+            'meanAbsoluteIntervalErrorMs': average(group, 'meanAbsoluteIntervalErrorMs'),
+            'longIntervalPercent': statistics.mean(100 * r['longIntervalsOver1_5Periods'] / r['intervalMs']['n'] for r in group),
             'medianDelayMs': average(group, 'pollToPresentationMs', 'p50'),
             'p95DelayMs': average(group, 'pollToPresentationMs', 'p95'),
             'replacements': sum(r['queueDelta']['replacements'] for r in group),

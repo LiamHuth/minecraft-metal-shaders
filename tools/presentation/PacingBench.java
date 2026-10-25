@@ -64,6 +64,8 @@ public class PacingBench implements ClientModInitializer {
         game(() -> {
             current = new LinkedHashMap<>();
             current.put("cap", cap); current.put("fresh", fresh); current.put("load", load);
+            current.put("loadScale", Double.parseDouble(System.getProperty("mcopt.bench.loadScale", "1")));
+            current.put("loadStepMs", Long.getLong("mcopt.bench.loadStepMs", 237L));
             current.put("width", mc.getWindow().getWidth()); current.put("height", mc.getWindow().getHeight());
             current.put("hdr", hdr); current.put("fullscreen", fullscreen);
             check(ShadeXdr.active() == hdr && (!hdr || ShadeXdr.fullScene()), "Expected HDR mode");
