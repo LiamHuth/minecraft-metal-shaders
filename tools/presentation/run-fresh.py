@@ -11,22 +11,28 @@ p.add_argument('--java-home', type=Path, required=True)
 p.add_argument('--output', type=Path, required=True)
 p.add_argument('--fullscreen', action='store_true')
 p.add_argument('--sdr', action='store_true')
+p.add_argument('--schedule-ms', type=float, default=0, help='Compare deadline scheduling instead of fresh-frame selection')
 p.add_argument('--phases', default='50,60,120,120g')
 p.add_argument('--sample-ms', type=int, default=10000)
 p.add_argument('--load-scale', type=float, default=1.0)
 p.add_argument('--load-step-ms', type=int, default=237)
 p.add_argument('--output-height', type=int)
 a = p.parse_args()
+if not 0 <= a.schedule_ms <= 50:
+    p.error('Use a schedule of 0–50 ms')
 a.output = a.output.resolve()
 a.output.mkdir(parents=True, exist_ok=False)
 here = Path(__file__).resolve().parent
 for i, enabled in enumerate([False, True, True, False]):
-    output = a.output / f'{i}-{"fresh" if enabled else "baseline"}'
+    mode = ('schedule' if a.schedule_ms else 'fresh') if enabled else 'baseline'
+    output = a.output / f'{i}-{mode}'
     command = [sys.executable, here / 'fresh-bench.py', a.jar.resolve(), '--java-home', a.java_home, '--output', output]
     command += ['--phases', a.phases, '--sample-ms', a.sample_ms, '--load-scale', a.load_scale]
     command += ['--load-step-ms', a.load_step_ms]
     if a.output_height is not None: command += ['--output-height', a.output_height]
-    if enabled: command.append('--fresh')
+    if enabled:
+        if a.schedule_ms: command += ['--schedule-ms', a.schedule_ms]
+        else: command.append('--fresh')
     if a.fullscreen: command.append('--fullscreen')
     if a.sdr: command.append('--sdr')
     print(f'Starting {output.name}', flush=True)

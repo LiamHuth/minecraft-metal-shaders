@@ -1946,6 +1946,24 @@ static Ctx *pqCtx;
 static int pqFresh;
 static _Atomic uint64_t pqCompleted;
 static _Atomic long pqFreshChecks, pqRefreshed, pqFreshSavedNs, pqDrawableWaitNs;
+// Render thread stamps the frame once after polling input. Its deadline follows
+// the staging slot, including latest-frame selection. No extra GPU/CPU wait.
+static double pqScheduleBudget, pqFrameStart, pqDeadline[PQ_SLOTS];
+static _Atomic long pqTimedPresents, pqExpiredDeadlines;
+
+void mc_present_schedule(double seconds) {
+	if (!pqQueue) pqScheduleBudget = isfinite(seconds) && seconds > 0 && seconds <= .05 ? seconds : 0;
+}
+
+void mc_present_frame_start(void) {
+	if (pqScheduleBudget > 0) pqFrameStart = CACurrentMediaTime();
+}
+
+static double pqFrameDeadline(double polled, double budget, double now) {
+	// A loading pause or absent input hook must never retain an old target.
+	return isfinite(polled) && isfinite(budget) && isfinite(now) && polled > 0
+		&& budget > 0 && budget <= .05 && now >= polled && now - polled <= .1 ? polled + budget : 0;
+}
 
 int mc_present_fresh(int enabled) {
 	if (!pqQueue) pqFresh = enabled != 0;
@@ -1959,6 +1977,9 @@ long mc_present_fresh_stat(int kind) {
 		case 2: return atomic_load(&pqRefreshed);
 		case 3: return atomic_load(&pqFreshSavedNs);
 		case 4: return atomic_load(&pqDrawableWaitNs);
+		case 5: return (long)(pqScheduleBudget * 1e9);
+		case 6: return atomic_load(&pqTimedPresents);
+		case 7: return atomic_load(&pqExpiredDeadlines);
 		default: return 0;
 	}
 }
@@ -2010,7 +2031,7 @@ static int pqFill(Enc *enc, id<MTLTexture> src) {
 
 // Draws staging slot `slot` into `drawable` on a pqQueue command buffer that first waits for the slot's fill, presents it,
 // and frees the slot when the GPU is done with it.
-static void pqEncodePresent(id<CAMetalDrawable> drawable, int slot, uint64_t wait, double queuedAt, long cadence) {
+static void pqEncodePresent(id<CAMetalDrawable> drawable, int slot, uint64_t wait, double queuedAt, long cadence, double deadline) {
 	Ctx *ctx = pqCtx;
 	id<MTLCommandBuffer> p = [pqQueue commandBuffer];
 	[p encodeWaitForEvent:pqEvent value:wait];
@@ -2032,7 +2053,14 @@ static void pqEncodePresent(id<CAMetalDrawable> drawable, int slot, uint64_t wai
 		atomic_store(&pqBusy[slot], 0);
 	}];
 	paceWatch(drawable);
-	[p presentDrawable:drawable];
+	double now = deadline > 0 ? CACurrentMediaTime() : 0;
+	if (deadline > now && deadline - now <= .05) {
+		[p presentDrawable:drawable atTime:deadline];
+		atomic_fetch_add(&pqTimedPresents, 1);
+	} else {
+		[p presentDrawable:drawable];
+		if (deadline > 0) atomic_fetch_add(&pqExpiredDeadlines, 1);
+	}
 	[p commit];
 }
 
@@ -2092,6 +2120,7 @@ int mc_present_queued_acquire(Enc *enc, CAMetalLayer *layer, id<MTLTexture> src,
 	pqLayer = layer;
 	pqCadence[k] = cadence;
 	pqQueuedAt[k] = CACurrentMediaTime();
+	pqDeadline[k] = pqFrameDeadline(pqFrameStart, pqScheduleBudget, pqQueuedAt[k]);
 	pqAcq = pqValue << 2 | (uint64_t) k;
 	return 1;
 }
@@ -2114,7 +2143,7 @@ static void pqWork(void) {
 			h = pqRefresh(h);
 			slot = (int) (h & 3);
 			if (pqCadence[slot] >= 0) mc_cadence_present(drawable, (int) pqCadence[slot]);
-			pqEncodePresent(drawable, slot, h >> 2, pqQueuedAt[slot], pqCadence[slot]);
+			pqEncodePresent(drawable, slot, h >> 2, pqQueuedAt[slot], pqCadence[slot], pqLayer.displaySyncEnabled ? pqDeadline[slot] : 0);
 		}
 	}
 }
@@ -2140,7 +2169,7 @@ static void pqSubmit(void) {
 	if (pqAcq) pqPublish();
 	if (!pqDrawable) return;
 	@autoreleasepool {
-		pqEncodePresent(pqDrawable, pqSlot, pqWait, CACurrentMediaTime(), -1);
+		pqEncodePresent(pqDrawable, pqSlot, pqWait, CACurrentMediaTime(), -1, 0);
 	}
 	[pqDrawable release];
 	pqDrawable = nil;

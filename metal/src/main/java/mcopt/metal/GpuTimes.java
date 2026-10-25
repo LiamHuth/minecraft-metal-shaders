@@ -24,7 +24,8 @@ public final class GpuTimes {
 	public static Map<String, Object> presentQueueSnapshot() {
 		return Map.of("enabled", Native.presentFreshStat(0) != 0,
 			"checks", Native.presentFreshStat(1), "replacements", Native.presentFreshStat(2),
-			"selectedFrameAgeSavedNs", Native.presentFreshStat(3), "drawableWaitNs", Native.presentFreshStat(4));
+			"selectedFrameAgeSavedNs", Native.presentFreshStat(3), "drawableWaitNs", Native.presentFreshStat(4),
+			"scheduleBudgetNs", Native.presentFreshStat(5), "scheduled", Native.presentFreshStat(6), "expiredDeadlines", Native.presentFreshStat(7));
 	}
 	static void initialize() {} // initialize storage and clock mapping before recording
 

@@ -69,6 +69,7 @@ for name, phase in data["phases"].items():
                       for t in phase_presentations) for second in range((end - begin) // 1_000_000_000)]
     row = result[name] = {
         "cap": phase["cap"], "fresh": phase["fresh"], "variableGpuLoad": phase["load"],
+        "candidate": phase.get("candidate", phase["fresh"]), "scheduleMs": phase.get("scheduleMs", 0),
         "loadScale": phase.get("loadScale", 1), "loadStepMs": phase.get("loadStepMs", 237),
         "fullscreen": fullscreen, "windowContext": context,
         "validContext": native_valid and phase["frames"] > 0
@@ -100,6 +101,10 @@ for name, phase in data["phases"].items():
         "presentedFramesPerSecond": per_second,
     }
     row["displayedFps"] = 1000 / statistics.mean(intervals) if intervals else None
+    if "scheduleBudgetNs" in q0:
+        row["scheduleDelta"] = {k: q1[k] - q0[k] for k in ("scheduled", "expiredDeadlines")}
+        row["validContext"] &= (abs(q0["scheduleBudgetNs"] / 1e6 - row["scheduleMs"]) < .0001
+                                and q0["scheduleBudgetNs"] == q1["scheduleBudgetNs"])
     # Separate regular input polling from CPU submission, GPU completion and
     # presentation cadence. A steady cap alone does not prove steady frame delivery.
     for source, label in (("submitNs", "submitIntervalMs"), ("gpuEndNs", "renderGpuEndIntervalMs"),
@@ -119,10 +124,15 @@ for name, phase in data["phases"].items():
         # not a sample to silently remove from a claimed queue-delay distribution.
         row["renderEndToPresentGpuEndMs"] = summary([(gpu["presentGpuEndNs"][i] - gpu["gpuEndNs"][i]) / 1e6 for i in valid_ends])
         row["presentGpuEndToShownMs"] = summary([(gpu["presentedTimeNs"][i] - gpu["presentGpuEndNs"][i]) / 1e6 for i in valid_ends])
+        if row["scheduleMs"] > 0 and valid_ends:
+            # The benchmark poll stamp is adjacent to the native scheduling hook,
+            # not that hook's exact timestamp. Treat this as a readiness estimate.
+            ready = [(gpu["presentGpuEndNs"][i] - gpu["pollNs"][i]) / 1e6 for i in valid_ends]
+            row["estimatedGpuReadyAfterTargetPercent"] = 100 * sum(t > row["scheduleMs"] for t in ready) / len(ready)
     row["validForComparison"] = (row["validContext"] and len(intervals) >= 10
         and unknown == 0 and contradictory == 0 and duplicate_times == 0
         and len(latency) == len(shown) and gpu["dropped"] == 0)
-    print(f"{name:14} fresh={row['fresh']} replacements={delta['replacements']} context={row['validContext']} comparison={row['validForComparison']} shown={len(shown)} "
+    print(f"{name:14} fresh={row['fresh']} schedule={row['scheduleMs']}ms replacements={delta['replacements']} context={row['validContext']} comparison={row['validForComparison']} shown={len(shown)} "
           f"FPS={fmt(row['displayedFps'])} interval mean/p95={fmt(row['intervalMs']['mean'])}/{fmt(row['intervalMs']['p95'])}ms "
           f"jitter SD={fmt(row['intervalMs']['stddev'])}ms "
           f"poll->shown median/p95={fmt(row['pollToPresentationMs']['p50'])}/{fmt(row['pollToPresentationMs']['p95'])}ms "

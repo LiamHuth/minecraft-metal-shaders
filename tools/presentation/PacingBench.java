@@ -64,6 +64,9 @@ public class PacingBench implements ClientModInitializer {
         game(() -> {
             current = new LinkedHashMap<>();
             current.put("cap", cap); current.put("fresh", fresh); current.put("load", load);
+            current.put("candidate", Boolean.getBoolean("mcopt.bench.candidate"));
+            double scheduleMs = Double.parseDouble(System.getProperty("mcopt.metal.presentScheduleMs", "0"));
+            current.put("scheduleMs", scheduleMs);
             current.put("loadScale", Double.parseDouble(System.getProperty("mcopt.bench.loadScale", "1")));
             current.put("loadStepMs", Long.getLong("mcopt.bench.loadStepMs", 237L));
             current.put("width", mc.getWindow().getWidth()); current.put("height", mc.getWindow().getHeight());
@@ -73,6 +76,8 @@ public class PacingBench implements ClientModInitializer {
             current.put("context", BenchContext.capture(mc.getWindow().handle(), true));
             var q = GpuTimes.presentQueueSnapshot();
             check((boolean)q.get("enabled") == fresh, "Native candidate setting matches request");
+            check(Math.abs(((Number)q.getOrDefault("scheduleBudgetNs", 0L)).longValue() / 1e6 - scheduleMs) < .0001,
+                "Native presentation deadline matches request");
             current.put("queueStart", q);
             current.put("nanoRange", new long[]{System.nanoTime(), 0});
             current.put("epochStartMs", System.currentTimeMillis());

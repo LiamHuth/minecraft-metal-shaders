@@ -12,6 +12,7 @@ if not sessions:
     raise SystemExit('No session summaries found')
 rows = {}
 protocols = {}
+policies = {}
 for session, phases in sessions:
     for phase, row in phases.items():
         if not row['validForComparison'] or row['presentationBeforeGpuCompletion']:
@@ -22,7 +23,11 @@ for session, phases in sessions:
                     context['drawableWidth'], context['drawableHeight'], context['screen'], context['maximumFPS'])
         if protocols.setdefault(phase, protocol) != protocol:
             raise SystemExit(f'Mismatched workload or display settings in {session}/{phase}')
-        rows.setdefault(phase, {}).setdefault('candidate' if row['fresh'] else 'baseline', []).append(row)
+        mode = 'candidate' if row.get('candidate', row['fresh']) else 'baseline'
+        policy = (row['fresh'], row.get('scheduleMs', 0))
+        if policies.setdefault(mode, policy) != policy:
+            raise SystemExit(f'Mismatched presentation policy in {session}/{phase}')
+        rows.setdefault(phase, {}).setdefault(mode, []).append(row)
 
 def average(group, key, subkey=None):
     return statistics.mean(r[key][subkey] if subkey else r[key] for r in group)

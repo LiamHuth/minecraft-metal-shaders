@@ -115,6 +115,8 @@ final class Native {
 	private static final MethodHandle PRESENT_QUEUED_ACQUIRE = fn("mc_present_queued_acquire", false, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle PRESENT_DROPPED = fn("mc_present_dropped", false, JAVA_LONG);
 	private static final MethodHandle PRESENT_FRESH = fn("mc_present_fresh", false, JAVA_INT, JAVA_INT);
+	private static final MethodHandle PRESENT_SCHEDULE = fn("mc_present_schedule", false, null, JAVA_DOUBLE);
+	private static final MethodHandle PRESENT_FRAME_START = fn("mc_present_frame_start", false, null);
 	private static final MethodHandle PRESENT_FRESH_STAT = fn("mc_present_fresh_stat", false, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle PACE_ADAPT = fn("mc_pace_adapt", false, null, JAVA_INT);
 	private static final MethodHandle PACE_FOLLOW = fn("mc_pace_follow", false, null, JAVA_INT);
@@ -247,6 +249,8 @@ final class Native {
 	static double paceExtraMs() { try { return (double) PACE_EXTRA_MS.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
 	static long presentDropped() { try { return (long) PRESENT_DROPPED.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
 	static int presentFresh(int enabled) { try { return (int) PRESENT_FRESH.invokeExact(enabled); } catch (Throwable t) { throw rethrow(t); } }
+	static void presentSchedule(double seconds) { try { PRESENT_SCHEDULE.invokeExact(seconds); } catch (Throwable t) { throw rethrow(t); } }
+	static void presentFrameStart() { try { PRESENT_FRAME_START.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
 	static long presentFreshStat(int kind) { try { return (long) PRESENT_FRESH_STAT.invokeExact(kind); } catch (Throwable t) { throw rethrow(t); } }
 	static int cadenceState(int index) { try { return (int) CADENCE_STATE.invokeExact(index); } catch (Throwable t) { throw rethrow(t); } }
 	static long cadencePresentGpuEnd(int index) { try { return (long) CADENCE_PRESENT_GPU_END.invokeExact(index); } catch (Throwable t) { throw rethrow(t); } }

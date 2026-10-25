@@ -49,6 +49,7 @@ final class MetalSurface implements GpuSurfaceBackend {
 		this.encoder = encoder;
 		this.view = SDLMetal.SDL_Metal_CreateView(window);
 		this.layer = SDLMetal.SDL_Metal_GetLayer(this.view);
+		FrameSchedule.initialize(MetalEncoder.PRESENT_ACQUIRE);
 		// Startup-only A/B switch; preserve the present worker and normal drawable pool.
 		boolean fresh = Boolean.getBoolean("mcopt.metal.presentFresh") && MetalEncoder.PRESENT_ACQUIRE;
 		Native.presentFresh(fresh ? 1 : 0);

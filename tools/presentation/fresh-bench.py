@@ -16,6 +16,7 @@ parser.add_argument("--output", type=Path, required=True)
 parser.add_argument("--java-home", type=Path, required=True)
 parser.add_argument("--prepare-only", action="store_true")
 parser.add_argument("--fresh", action="store_true")
+parser.add_argument("--schedule-ms", type=float, default=0, help="Experimental input-relative deadline; zero disables it")
 parser.add_argument("--fullscreen", action="store_true")
 parser.add_argument("--sdr", action="store_true")
 parser.add_argument("--phases", default="50,60,120,120g", help="Comma-separated caps; g adds varying GPU load")
@@ -24,6 +25,8 @@ parser.add_argument("--load-scale", type=float, default=1.0, help="GPU work mult
 parser.add_argument("--load-step-ms", type=int, default=237, help="Time between GPU workload changes, 100 to 5000 ms")
 parser.add_argument("--output-height", type=int, help="Shader output height; zero keeps native output")
 opts = parser.parse_args()
+if not 0 <= opts.schedule_ms <= 50 or (opts.fresh and opts.schedule_ms):
+    parser.error('Use a schedule of 0–50 ms, separately from --fresh')
 if not re.fullmatch(r'\d+g?(,\d+g?)*', opts.phases) or any(int(x.rstrip('g')) not in range(10, 261, 10) for x in opts.phases.split(',')):
     parser.error('Phases must use caps from 10 to 260 in steps of 10, with optional g')
 if not 1000 <= opts.sample_ms <= 60000:
@@ -90,6 +93,8 @@ args = [
     str(java / "java"), "-XstartOnFirstThread", "-Xmx2G", "--enable-native-access=ALL-UNNAMED",
     "-Dmcopt.shade=true", "-Dmcopt.shade.diag=false",
     f"-Dmcopt.metal.presentFresh={str(opts.fresh).lower()}",
+    f"-Dmcopt.metal.presentScheduleMs={opts.schedule_ms}",
+    f"-Dmcopt.bench.candidate={str(opts.fresh or opts.schedule_ms > 0).lower()}",
     "-Dmcopt.metal.presentQueue=acquire",
     "-Dmcopt.metal.gpuTimes=true", "-Dmcopt.metal.latency=true",
     f"-Dmcopt.bench.output={output / 'measurements.json'}",
@@ -108,6 +113,7 @@ if opts.fullscreen:
 (output / "manifest.json").write_text(json.dumps({
     "jar": str(jar), "sha256": hashlib.sha256(jar.read_bytes()).hexdigest(),
     "game": str(game), "args": args, "fresh": opts.fresh,
+    "scheduleMs": opts.schedule_ms, "candidate": opts.fresh or opts.schedule_ms > 0,
     "fullscreen": opts.fullscreen, "hdr": not opts.sdr,
     "phases": opts.phases, "sampleMs": opts.sample_ms, "outputHeight": opts.output_height,
     "loadScale": opts.load_scale,

@@ -40,6 +40,30 @@ median input-poll-to-presentation delay in light scenes and lower loaded FPS.
 That version was rejected. The current completion-handler implementation avoids
 changing the GPU event type.
 
+## Input-relative presentation scheduling experiment
+
+`-Dmcopt.metal.presentScheduleMs=11` enables a separate, startup-only experiment on
+this branch. Zero (the default) keeps ordinary presentation. A native timestamp
+immediately after input polling defines an earliest presentation target for that
+frame. The target follows its staging slot; the worker uses
+`presentDrawable:atTime:` only while the target is in the future and VSync is on.
+Missing or stale input timestamps bypass scheduling. This adds no CPU sleep, GPU
+fence or display-link callback, and does not change the existing drawable count.
+It requires `mcopt.metal.presentQueue=acquire`.
+
+The parameter is an experimental fixed time budget, not an adaptive algorithm or
+a recommended user setting. A frame can finish after its target and be shown
+late. Even a frame that finishes early may wait longer than with ordinary
+presentation. This must be measured against both cadence and latency, especially
+when the GPU cannot keep up with the FPS cap.
+
+Pass `--schedule-ms 11` to `run-fresh.py` to compare this policy against disabled
+scheduling in A/B/B/A order. The runner leaves fresh-frame replacement disabled in
+both modes, isolating the scheduling change. Native counters verify the configured
+budget and count timed presents versus targets already expired at CPU encoding.
+An unexpired target does **not** mean the GPU will finish by that time. Reports and
+manifests record the policy; comparisons reject mixed candidate budgets.
+
 ## Correctness checks
 
 ```sh
@@ -218,3 +242,67 @@ physical latency measurement, or coverage of chunk-loading/GC stalls. No product
 renderer behavior was changed for this follow-up. The candidate remains off by
 default. Raw reports and manifests are saved in the workspace under
 `work/promotion/lowfps/fullscreen-abba`.
+
+### Input-relative deadline experiment, 2026-10-24
+
+Diagnostic `.15` adds the optional scheduling policy described above. A 12 ms,
+10-second-per-phase pilot showed small cadence changes and some extra latency.
+The controlled follow-up used an 11 ms budget and four 20-second-per-phase
+fullscreen sessions in A/B/B/A order, with the same 30/40/50/60/60g protocol as the
+previous experiment. All four used the identical jar and harness hashes, built-in
+120 Hz screen, HDR, VSync, three drawables and 1434×900 output. Every session passed
+focus, actual-cap, display-context and timestamp checks and closed normally.
+
+Means of two session statistics per mode (control / scheduled):
+
+| Workload | Displayed FPS | Frame-spacing SD | Median poll-to-present | p95 poll-to-present |
+|---|---:|---:|---:|---:|
+| 30 cap, light | 29.93 / 29.94 | 3.73 / 3.40 ms | 15.10 / 15.26 ms | 18.60 / 18.79 ms |
+| 40 cap, light | 39.94 / 39.93 | 4.85 / 4.58 ms | 14.23 / 14.58 ms | 21.10 / 21.26 ms |
+| 50 cap, light | 49.90 / 49.90 | 4.08 / 3.83 ms | 13.75 / 14.00 ms | 18.46 / 18.37 ms |
+| 60 cap, light | 59.88 / 59.88 | 3.55 / 3.45 ms | 13.69 / 14.13 ms | 17.00 / 18.06 ms |
+| 60 cap, varying GPU load | 54.32 / 54.39 | 5.07 / 4.96 ms | 25.28 / 24.16 ms | 89.90 / 90.10 ms |
+
+The candidate made 9,364 timed presentation calls across its measurement windows;
+five targets had already expired at CPU encoding and used ordinary presentation.
+The policy definitely ran, but these counters do not imply on-time GPU completion.
+About 87–89% of frames in the loaded candidate samples completed their final GPU
+work after the input-relative target. This estimate uses the benchmark input
+stamp adjacent to the native scheduling hook, not that hook's exact timestamp.
+
+The roughly 6% reduction in spacing SD at 40 and 50 FPS came with 0.25–0.35 ms
+higher median software delay. At 60 FPS the candidate runs disagreed on cadence,
+and average p95 delay increased by about 1 ms. Under varying load the aggregate
+spacing improvement was only about 2%, throughput was unchanged, and the roughly
+90 ms tail of input-to-presentation age remained. No consistent improvement in
+physical response or visible smoothness has been demonstrated.
+
+Long stalls remain included in the table. One scheduled 30 FPS sample had a
+100 ms presentation gap and one control sample had a 104 ms gap. Their timestamp
+traces show roughly 70 ms spent before CPU submission, so these two stalls did
+not originate in the final presentation wait. Their underlying CPU cause was not
+profiled. A control loaded sample also contained a 54 ms gap. Do not discard these
+frames or confuse frame age with display gaps.
+
+A post-hoc look at the middle 0.2–0.9 seconds of the ~45 FPS GPU-load plateaus
+found GPU-completion spacing SD of 0.14–0.16 ms in the controls, versus reported
+presentation spacing SD of 5.11–5.15 ms. Scheduled samples measured about 4.09 ms
+presentation SD there, with essentially unchanged ~70 ms frame age. This narrower
+result is promising enough for a dedicated repeat, but is exploratory: the load
+steps were inferred from submission time, and their boundaries were excluded only
+for this diagnostic, not for the headline comparison. It does not establish a
+panel scanout or input-to-photon improvement.
+
+The experiment remains disabled by default and is not recommended as a general
+ProMotion fix. The next focused test should isolate those GPU-bound ~45 FPS
+plateaus, then evaluate a target based on actual GPU completion cadence rather
+than assuming every frame will finish 11 ms after input. Do not increase the fixed
+budget simply to make the interval graph smoother at the cost of older input.
+
+Validation: the full Java/native build passed, as did the concurrent mailbox test
+and 48 real-Metal SDR/HDR cycles in each selection mode, including deadline
+ownership and stale-input fallback. Live mode toggles and physical tearing were
+not tested. Raw pilot and comparison files are under
+`work/promotion/schedule15/pilot12` and
+`work/promotion/schedule15/fullscreen11-abba` in the workspace. The tested jar SHA-256
+is `d95ce2e2ee4dcd715de20bd6e436a4bdc46093a2a93df57e94691da3adb6d2fd`.

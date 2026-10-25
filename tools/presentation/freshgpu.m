@@ -19,6 +19,7 @@ static void finish(id<MTLCommandBuffer> cb) {
 }
 
 static uint64_t frame(int colour, int size, long identity, id<MTLSharedEvent> gate, id<MTLCommandBuffer> *submitted) {
+	mc_present_frame_start();
 	MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
 		width:size height:size mipmapped:NO];
 	d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
@@ -33,6 +34,10 @@ static uint64_t frame(int colour, int size, long identity, id<MTLSharedEvent> ga
 	[[cb renderCommandEncoderWithDescriptor:rp] endEncoding];
 	check(mc_present_queued_acquire(testEnc, nil, src, identity), "staging slot available");
 	uint64_t h = pqAcq;
+	// Cold shader compilation may consume the stale-input window on the first fill.
+	if (pqQueuedAt[h & 3] - pqFrameStart <= .1)
+		check(pqDeadline[h & 3] == pqFrameStart + pqScheduleBudget, "input deadline follows its filled slot");
+	else check(pqDeadline[h & 3] == 0, "cold fill bypasses its stale deadline");
 	// Test the actual fill and selection without creating a window. The harness
 	// owns the hand-off instead of scheduling the display worker on commit.
 	pqAcq = 0;
@@ -78,11 +83,18 @@ int main(int argc, char **argv) { @autoreleasepool {
 	check(testCtx != NULL, error);
 	testEnc = mc_enc_new(testCtx);
 	mc_present_fresh(enabled);
+	mc_present_schedule(.012);
+	check(pqFrameDeadline(10, .012, 10.005) == 10.012, "deadline uses input clock");
+	check(pqFrameDeadline(0, .012, 10) == 0, "absent input bypasses scheduling");
+	check(pqFrameDeadline(10, .012, 11) == 0, "paused frame bypasses scheduling");
+	check(pqFrameDeadline(10, .012, 9) == 0, "reversed clock bypasses scheduling");
+	check(pqFrameDeadline(10, NAN, 10) == 0, "invalid budget bypasses scheduling");
 	for (int hdr = 0; hdr < 2; hdr++) {
 		mc_xdr_enable(hdr);
 		for (int round = 0; round < 24; round++) {
 			id<MTLCommandBuffer> a, b, c;
 			uint64_t current = frame(0, 8 + round % 3, 100, nil, &a); finish(a);
+			double currentDeadline = pqDeadline[current & 3];
 			check(pqRefresh(current) == current, "empty hand-off retains current frame");
 			id<MTLSharedEvent> gate = [testCtx->device newSharedEvent];
 			uint64_t newer = frame(1, 11 + round % 3, 200, gate, &b);
@@ -95,9 +107,11 @@ int main(int argc, char **argv) { @autoreleasepool {
 			check(atomic_load(&pqHandoff) == newer, "unfinished hand-off preserved");
 			// A third frame replaces the mailbox while the worker owns current.
 			uint64_t newest = frame(2, 14 + round % 3, 300, nil, &c); finish(c);
+			double newestDeadline = pqDeadline[newest & 3];
 			publish(newest);
 			selected = pqRefresh(current);
 			check(selected == (enabled ? newest : current), "ready frame selection respects opt-in");
+			check(pqDeadline[selected & 3] == (enabled ? newestDeadline : currentDeadline), "selected frame keeps its own deadline");
 			pixel(selected, enabled ? 2 : 0, enabled ? 300 : 100, hdr);
 			if (enabled) {
 				check(!atomic_load(&pqBusy[current & 3]), "discarded current slot released exactly once");
